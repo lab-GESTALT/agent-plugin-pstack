@@ -1,0 +1,12 @@
+{
+  "name": "agent-plugin-pstack",
+  "owner": {
+    "name": "TurnX-alt"
+  },
+  "plugins": [
+    {
+      "name": "pstack",
+      "source": "./plugins/pstack"
+    }
+  ]
+}

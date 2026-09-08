@@ -1,0 +1,34 @@
+{
+  "version": 1,
+  "manifest": {
+    "from": ".cursor-plugin/plugin.json",
+    "keep": ["name", "version", "description", "author", "homepage", "repository", "license", "keywords"],
+    "add": { "$schema": "https://agent-plugins.org/schemas/1.0.0/plugin.schema.json" },
+    "dropToExtension": ["displayName", "logo", "category", "tags", "skills", "agents"],
+    "extension": { "namespace": "com.cursor", "file": "plugin.json" }
+  },
+  "frontmatter": {
+    "name": "lowercase+equalDirname",
+    "moveToMetadata": { "mode": "mode: session", "reminder": "reminder" },
+    "keep": ["disable-model-invocation"],
+    "drop": ["icon", "color"]
+  },
+  "bodyTokens": [
+    { "find": "AskQuestion", "replace": "结构化提问(问题数组 + 选项 + 多选)", "note": "四端等价表见 MAPPING.md" },
+    { "find": "subagent_type: \"poteto-agent\"", "replace": "以类型名 poteto-agent 委派子代理", "note": "agent 注册表见 agents/" },
+    { "find": "/loop", "replace": "循环执行直到谓词满足(间隔唤醒)", "note": "等价:CC/Cursor /loop,DSH goal/ralph,Codex 后台模式" },
+    { "find": "~/.cursor/rules/pstack-models.mdc", "replace": "pstack-models.json(harness 无关角色模型数据文件)" },
+    { "find": "cursor-team-kit", "replace": "可选组件(上游配套插件提供,本包未捆绑,请按本端环境选用等价组件)" },
+    { "find": "subagent_type", "replace": "子代理类型" },
+    { "find": "generalPurpose", "replace": "通用型子代理" },
+    { "find": "~/.cursor/skills", "replace": "~/.agents/skills" },
+    { "find": ".cursor/skills", "replace": ".agents/skills" },
+    { "find": "~/.cursor/projects", "replace": "本端会话转录目录" },
+    { "find": "~/.cursor/plugins", "replace": "本端插件安装目录" },
+    { "find": ".cursor/worktrees", "replace": "本端 worktree 目录" },
+    { "find": "agent-transcripts", "replace": "session-transcripts" },
+    { "find": "https://api2.cursor.sh/automations/webhook/", "replace": "(Cursor 专属 webhook 端点,本端等价:目标应用的 webhook 接收端点)" }
+  ],
+  "agents": { "policy": "registry", "dir": "agents/" },
+  "sampleSkills": []
+}
