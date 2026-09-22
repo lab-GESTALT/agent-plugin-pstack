@@ -10,7 +10,7 @@ permissions:
   issues: write
 
 env:
-  GH_TOKEN: ${{ secrets.UPDATER_PAT }}
+  GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 
 jobs:
   sync:
@@ -18,8 +18,6 @@ jobs:
     steps:
       - name: Checkout
         uses: actions/checkout@v4
-        with:
-          token: ${{ secrets.UPDATER_PAT }}
 
       - name: Fetch upstream
         run: |
