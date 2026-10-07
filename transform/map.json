@@ -1,5 +1,5 @@
 {
-  "version": 2,
+  "version": 3,
   "manifest": {
     "from": ".cursor-plugin/plugin.json",
     "keep": [
@@ -32,7 +32,8 @@
     "name": "lowercase+equalDirname",
     "moveToMetadata": {
       "mode": "mode: session",
-      "reminder": "reminder"
+      "reminder": "reminder",
+      "is_background": "is_background"
     },
     "keep": [
       "disable-model-invocation"
@@ -52,6 +53,11 @@
       "find": "subagent_type: \"poteto-agent\"",
       "replace": "以类型名 poteto-agent 委派子代理",
       "note": "agent 注册表见 agents/"
+    },
+    {
+      "find": "subagent_type: \"Comment Sicko\"",
+      "replace": "子代理类型: \"comment-sicko\"",
+      "note": "与 agents/comment-sicko.md 的注册名对齐;须排在裸 subagent_type 之前"
     },
     {
       "find": "/loop",
@@ -135,6 +141,33 @@
       "reason": "程序标记字符串字面量(用于识别唤醒机制),非文档散文;机械替换会改变脚本行为"
     }
   ],
+  "apContract": {
+    "source": "agent-plugins.org schemas/1.0.0/plugin.schema.json (draft 2020-12; additionalProperties: false)",
+    "schemaId": "https://agent-plugins.org/schemas/1.0.0/plugin.schema.json",
+    "allowedKeys": [
+      "$schema",
+      "name",
+      "version",
+      "description",
+      "author",
+      "homepage",
+      "repository",
+      "license",
+      "keywords",
+      "extensions"
+    ],
+    "requiredKeys": [
+      "$schema",
+      "name"
+    ],
+    "namePattern": "^(?!.*(?:--|\\.\\.))[a-z0-9](?:[a-z0-9.-]*[a-z0-9])?$",
+    "maxNameLength": 64,
+    "authorKeys": [
+      "name",
+      "email",
+      "url"
+    ]
+  },
   "agents": {
     "policy": "registry",
     "dir": "agents/"

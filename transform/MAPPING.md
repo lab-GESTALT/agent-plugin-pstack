@@ -5,21 +5,33 @@
 | # | Cursor 机制 | 通用映射 |
 |---|---|---|
 | 1 | mode / icon / color / reminder | mode → metadata.mode(session);reminder → metadata.reminder;icon/color 删除;文档标注「粘性会话语义不可移植,由 description 触发承接」 |
-| 2 | subagent_type + agents/ | agent 类型注册表;引用改写「以类型名 X 委派子代理」;AP 顶层携带 agents/,CC 适配器映射进原生 agents/ |
+| 2 | subagent_type + agents/ | agent 类型注册表;frontmatter 的 name 归一为文件名,is_background 移入 metadata;引用改写「以类型名 X 委派子代理」,生成点与注册名对齐;AP 顶层携带 agents/,CC 适配器映射进原生 agents/ |
 | 3 | AskQuestion | 「结构化提问(问题数组 + 选项 + 多选)」;等价表:DSH=ask_user_question、CC=AskUserQuestion、Codex=request_user_input、Cursor=AskQuestion |
 | 4 | /loop | 「循环执行直到谓词满足(间隔唤醒)」;等价:CC/Cursor=/loop、DSH=goal 机制或 ralph、Codex=后台模式 |
 | 5 | ~/.cursor/rules + pstack-models.mdc | 通用 .md 规则(frontmatter: description/globs/alwaysApply);角色模型 = harness 无关 pstack-models.json,全路径与裸文件名两种写法都改写;端放置:CC=CLAUDE.md、DSH=AGENTS.md、Codex=AGENTS.md |
 | 6 | cursor-team-kit 依赖 | 打标「可选组件」,不捆依赖;等价能力:去 AI 味写作类技能 ≈ deslop,浏览器/CLI 控制类技能 ≈ control-cli/ui |
 | 7 | 产物 | map.json(机器)+ 本文件(人读),成对维护 |
 
-变换范围:全量技能 + manifest 投影 + agents/ 变换;产出 output/(AP 通用版,由 CI 生成、打包后删除,从不入仓)与 plugins/pstack/(CC 市场形态,入仓)。
+变换范围:全量技能 + manifest 投影 + agents/ 变换;产出 output/(AP 通用版,由 CI 生成、打包后删除,从不入仓)与 plugins/pstack/(CC 市场形态,入仓)。生成内容不手改,一律由管线重算。
 
-令牌顺序:bodyTokens 按「先特异后泛化」排列,全路径规则必须排在对应的裸文件名规则之前(map.json 的数组顺序即执行顺序)。
+令牌顺序:bodyTokens 按「先特异后泛化」排列,全路径规则必须排在对应的裸文件名规则之前,生成点规则必须排在裸 subagent_type 之前(map.json 的数组顺序即执行顺序)。
 
 补充规则(全量审计后新增):裸 subagent_type → 子代理类型;generalPurpose → 通用型子代理;~/.cursor/skills → ~/.agents/skills;.cursor/skills → .agents/skills;~/.cursor/projects → 会话转录目录;~/.cursor/plugins → 插件安装目录;.cursor/worktrees → worktree 目录;agent-transcripts → session-transcripts;api2.cursor.sh webhook → 打标(Cursor 专属端点,等价做法:改用目标应用的 webhook 接收端点)。agents/*.md 同样过令牌循环。
 
-## 验证门的扫描范围
+## 规则文件是被执行的,不是被描述的
 
-gate1 扫描 plugins/pstack 下全部文本文件,模式集 = map.json 的 residualPatterns 加上 bodyTokens 的 find 串,门与变换表同源,不再各存一份清单。
+transform.ps1 直接读取 map.json:manifest.keep 决定顶层保留字段,manifest.add 补齐 $schema,manifest.dropToExtension 与 keep 之外的上游字段全部进扩展目录,manifest.extension 决定扩展目录名与文件名;frontmatter.drop 删除字段,frontmatter.moveToMetadata 决定移入 metadata 的字段,frontmatter.keep 是必须存活的字段;agents.dir 是 agents 目录。
+
+两处断言让规则与实现不可能悄悄分叉:上游 manifest 出现既不在 keep、也不在 dropToExtension 的字段时,变换直接失败;frontmatter.keep 里的字段在上游存在而产物丢失时,变换直接失败。
+
+## 验证门(三层,唯一闸门)
+
+gate1 残留扫描:扫描 plugins/pstack 下全部文本文件,模式集 = map.json 的 residualPatterns 加上 bodyTokens 的 find 串,门与变换表同源。
+
+gate2 frontmatter 与 Agent Plugins 契约:每个 SKILL.md 的 name 等于目录名,每个 agents/*.md 的 name 等于文件名,frontmatter 不得残留 mode/icon/color/reminder/is_background 顶层字段(含引号写法)。output/ 存在时另查 AP 清单:顶层字段必须落在 apContract.allowedKeys 内、必需字段齐、$schema 等于 canonical id、name 符合规范正则与长度上限、author 字段受限、keywords 为字符串数组、LICENSE 随产物存在、AP 与 CC 的技能数一致。
+
+gate3 CC 市场 dry-run:marketplace.json 与各插件清单必须可解析,name/owner 齐备;每个 plugin.source 必须存在且其 .claude-plugin/plugin.json 可解析;清单声明的 skills/agents 路径必须存在且非空。
 
 脚本类文件不做散文式令牌替换:替换文本是给文档读的措辞,写进 shell / TS / mjs 会破坏脚本行为。这类已知残留逐条登记在 map.json 的 codeResidualAllowlist(路径 + 模式 + 原因);门放行时打印 `gate1 allowed residual`,任何未登记的新残留一律判失败并给出文件与行号。
+
+本地跑门时若 output/ 不存在,gate2 的 AP 部分会打印跳过说明而不是静默通过——CI 里 output/ 总是刚由 transform 生成。
