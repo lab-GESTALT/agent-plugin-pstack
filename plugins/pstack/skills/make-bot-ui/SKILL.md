@@ -34,7 +34,7 @@ Tell the user to do this:
 4. Copy the webhook URL. The user may paste the URL in chat.
 5. Copy the sender key. The user must not paste the sender key in chat.
 
-The URL looks like `(Cursor 专属 webhook 端点,本端等价:目标应用的 webhook 接收端点)<id>` with no query string. Copy the URL from the routine. Do not guess the id.
+The URL looks like `(Cursor 专属端点;等价做法:改用目标应用的 webhook 接收端点)<id>` with no query string. Copy the URL from the routine. Do not guess the id.
 
 ## Request the sender key
 

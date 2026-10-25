@@ -9,8 +9,13 @@ permissions:
   contents: write
   issues: write
 
+# 同一时刻只跑一个同步,避免并发抢同一个 tag 序号
+concurrency:
+  group: sync-pstack
+  cancel-in-progress: false
+
 env:
-  GH_TOKEN: ${{ secrets.UPDATER_PAT }}
+  GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 
 jobs:
   sync:
@@ -18,8 +23,6 @@ jobs:
     steps:
       - name: Checkout
         uses: actions/checkout@v4
-        with:
-          token: ${{ secrets.UPDATER_PAT }}
 
       - name: Fetch upstream
         run: |
@@ -46,26 +49,51 @@ jobs:
         shell: pwsh
         run: ./transform/scripts/validate.ps1 -Root .
 
-      - name: Commit, tag, release
+      - name: Record upstream
         if: steps.detect.outputs.changed == 'yes'
         run: |
           NEW=$(git -C upstream rev-parse HEAD)
+          NEW_DATE=$(git -C upstream log -1 --format=%cd --date=short)
           VERSION=$(jq -r .version plugins/pstack/.claude-plugin/plugin.json)
-          jq --arg c "$NEW" '.commit=$c' pin.json > pin.tmp && mv pin.tmp pin.json
-          git config user.name "${{ github.actor }}"
-          git config user.email "${{ github.actor }}@users.noreply.github.com"
+          jq --arg c "$NEW" --arg v "$VERSION" --arg d "$NEW_DATE" '.commit=$c | .version=$v | .date=$d' pin.json > pin.tmp && mv pin.tmp pin.json
+          echo "UPSTREAM=$NEW" >> "$GITHUB_ENV"
+          echo "VERSION=$VERSION" >> "$GITHUB_ENV"
+
+      - name: Commit
+        if: steps.detect.outputs.changed == 'yes'
+        run: |
+          # 固定提交身份:不依赖 github.actor(cron 与手动触发的 actor 语义不同)
+          git config user.name "TurnX-alt"
+          git config user.email "225419967+TurnX-alt@users.noreply.github.com"
           git add plugins .claude-plugin pin.json
-          git commit -m "sync: pstack ${VERSION} (upstream ${NEW})" || echo "nothing to commit"
-          N=$(git tag -l "pstack-${VERSION}-r*" | wc -l)
+          git commit -m "sync: pstack ${VERSION} (upstream ${UPSTREAM})" || echo "::warning::nothing to commit"
+
+      - name: Tag and push
+        if: steps.detect.outputs.changed == 'yes'
+        run: |
+          # checkout 不取 tag(fetch-tags: false),序号必须向远端查询,否则同版本二次同步会撞名
+          N=$(git ls-remote --tags origin "refs/tags/pstack-${VERSION}-r*" | wc -l)
           T="pstack-${VERSION}-r$((N+1))"
+          echo "TAG=$T" >> "$GITHUB_ENV"
           git tag "$T"
           git push origin HEAD:main --tags
-          (cd output && zip -q -r "../${T}.zip" .)
-          gh release create "$T" "${T}.zip" --title "pstack ${VERSION} (generic)" --notes "Auto-synced from cursor/plugins@${NEW}" || echo "release create skipped"
-          rm -f "${T}.zip"
+
+      - name: Publish release
+        if: steps.detect.outputs.changed == 'yes'
+        run: |
+          (cd output && zip -q -r "../${TAG}.zip" .)
+          gh release create "$TAG" "${TAG}.zip" --title "pstack ${VERSION} (generic)" --notes "Auto-synced from cursor/plugins@${UPSTREAM}" || echo "::warning::release create skipped"
+          rm -f "${TAG}.zip"
 
       - name: Alert on failure
         if: failure()
         run: |
           NEW=$(git -C upstream rev-parse HEAD 2>/dev/null || echo unknown)
-          gh issue create --title "sync failed: upstream ${NEW}" --body "pstack sync pipeline failed. See run: ${GITHUB_SERVER_URL}/${GITHUB_REPOSITORY}/actions/runs/${GITHUB_RUN_ID}. pin.json unchanged; next cron will retry." || echo "alert skipped"
+          BODY="pstack sync pipeline failed. See run: ${GITHUB_SERVER_URL}/${GITHUB_REPOSITORY}/actions/runs/${GITHUB_RUN_ID}. pin.json unchanged; next cron will retry."
+          # 同一故障持续存在时并入同一 issue,不重复刷屏
+          EXISTING=$(gh issue list --state open --limit 100 --json number,title --jq '[.[] | select(.title | startswith("sync failed:"))][0].number' || true)
+          if [ -n "$EXISTING" ] && [ "$EXISTING" != "null" ]; then
+            gh issue comment "$EXISTING" --body "upstream ${NEW}: ${BODY}" || echo "::warning::alert comment failed"
+          else
+            gh issue create --title "sync failed: upstream ${NEW}" --body "$BODY" || echo "::warning::alert create failed"
+          fi
