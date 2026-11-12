@@ -33,11 +33,14 @@ jobs:
       - name: Detect change
         id: detect
         run: |
-          OLD=$(jq -r .commit pin.json)
+          # 只比 pstack 子树:上游其余目录的提交不该触发全量重算
+          # pstackTree 缺失时(旧 pin)判为有变更,补一次同步把该字段写回
+          OLD=$(jq -r '.pstackTree // empty' pin.json)
           NEW=$(git -C upstream rev-parse HEAD)
+          NEW_TREE=$(git -C upstream rev-parse HEAD:pstack)
           echo "old=$OLD" >> "$GITHUB_OUTPUT"
           echo "new=$NEW" >> "$GITHUB_OUTPUT"
-          if [ "$OLD" = "$NEW" ]; then echo "changed=no" >> "$GITHUB_OUTPUT"; else echo "changed=yes" >> "$GITHUB_OUTPUT"; fi
+          if [ -n "$OLD" ] && [ "$OLD" = "$NEW_TREE" ]; then echo "changed=no" >> "$GITHUB_OUTPUT"; else echo "changed=yes" >> "$GITHUB_OUTPUT"; fi
 
       - name: Transform
         if: steps.detect.outputs.changed == 'yes'
@@ -47,15 +50,23 @@ jobs:
       - name: Validate gates
         if: steps.detect.outputs.changed == 'yes'
         shell: pwsh
-        run: ./transform/scripts/validate.ps1 -Root .
+        run: |
+          # 留存门输出供失败告警引用,否则告警只有 run 链接,定位必须翻日志
+          $out = & ./transform/scripts/validate.ps1 -Root . 2>&1
+          $code = $LASTEXITCODE
+          $text = $out -join "`n"
+          Set-Content -Path gate-report.txt -Value $text -Encoding utf8
+          Write-Output $text
+          exit $code
 
       - name: Record upstream
         if: steps.detect.outputs.changed == 'yes'
         run: |
           NEW=$(git -C upstream rev-parse HEAD)
+          NEW_TREE=$(git -C upstream rev-parse HEAD:pstack)
           NEW_DATE=$(git -C upstream log -1 --format=%cd --date=short)
           VERSION=$(jq -r .version plugins/pstack/.claude-plugin/plugin.json)
-          jq --arg c "$NEW" --arg v "$VERSION" --arg d "$NEW_DATE" '.commit=$c | .version=$v | .date=$d' pin.json > pin.tmp && mv pin.tmp pin.json
+          jq --arg c "$NEW" --arg t "$NEW_TREE" --arg v "$VERSION" --arg d "$NEW_DATE" '.commit=$c | .pstackTree=$t | .version=$v | .date=$d' pin.json > pin.tmp && mv pin.tmp pin.json
           echo "UPSTREAM=$NEW" >> "$GITHUB_ENV"
           echo "VERSION=$VERSION" >> "$GITHUB_ENV"
 
@@ -90,6 +101,12 @@ jobs:
         run: |
           NEW=$(git -C upstream rev-parse HEAD 2>/dev/null || echo unknown)
           BODY="pstack sync pipeline failed. See run: ${GITHUB_SERVER_URL}/${GITHUB_REPOSITORY}/actions/runs/${GITHUB_RUN_ID}. pin.json unchanged; next cron will retry."
+          # 带上失败门的实际输出,让 issue 自身可定位;FENCE 用单引号避免 bash 把反引号当命令替换
+          # 用 printf 单行构造:块标量里不能出现顶格行,否则 YAML 解析失败
+          if [ -f gate-report.txt ]; then
+            FENCE='```'
+            BODY=$(printf '%s\n\nGate output:\n%s\n%s\n%s' "$BODY" "$FENCE" "$(tail -n 20 gate-report.txt)" "$FENCE")
+          fi
           # 同一故障持续存在时并入同一 issue,不重复刷屏
           EXISTING=$(gh issue list --state open --limit 100 --json number,title --jq '[.[] | select(.title | startswith("sync failed:"))][0].number' || true)
           if [ -n "$EXISTING" ] && [ "$EXISTING" != "null" ]; then
