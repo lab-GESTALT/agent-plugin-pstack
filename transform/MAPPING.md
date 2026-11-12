@@ -28,6 +28,10 @@ transform.ps1 直接读取 map.json:manifest.keep 决定顶层保留字段,manif
 
 gate1 残留扫描:扫描 plugins/pstack 下全部文本文件,模式集 = map.json 的 residualPatterns 加上 bodyTokens 的 find 串,门与变换表同源。
 
+同一个 find 串在两处的语义不同:transform.ps1 按**字面串**替换,validate.ps1 按**正则**匹配(Select-String,默认忽略大小写)。字面串够用的替换规则,直接当正则会误伤——例如 `/loop` 会命中导入路径 `./passes/loop-check.ts` 里的 `passes/loop-check`,与 Cursor 的 /loop 命令无关。需要收紧门的精度时,在该 bodyToken 上加 `gatePattern` 覆盖门用的正则,`find`/`replace` 保持不变,散文替换不受影响。`/loop` 的门正则 `(?<![\w./-])/loop(?![\w-])` 要求斜杠起始一个独立词元,因此只匹配命令用法,不匹配路径段。
+
+白名单与报错都按 `find`(令牌身份)匹配,不按正则串,所以收紧 gatePattern 不需要改动已有的 codeResidualAllowlist 登记。
+
 gate2 frontmatter 与 Agent Plugins 契约:每个 SKILL.md 的 name 等于目录名,每个 agents/*.md 的 name 等于文件名,frontmatter 不得残留 mode/icon/color/reminder/is_background 顶层字段(含引号写法)。output/ 存在时另查 AP 清单:顶层字段必须落在 apContract.allowedKeys 内、必需字段齐、$schema 等于 canonical id、name 符合规范正则与长度上限、author 字段受限、keywords 为字符串数组、LICENSE 随产物存在、AP 与 CC 的技能数一致。
 
 gate3 CC 市场 dry-run:marketplace.json 与各插件清单必须可解析,name/owner 齐备;每个 plugin.source 必须存在且其 .claude-plugin/plugin.json 可解析;清单声明的 skills/agents 路径必须存在且非空。

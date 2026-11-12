@@ -62,6 +62,7 @@
     {
       "find": "/loop",
       "replace": "循环执行直到谓词满足(间隔唤醒)",
+      "gatePattern": "(?<![\\w./-])/loop(?![\\w-])",
       "note": "等价:CC/Cursor /loop,DSH goal/ralph,Codex 后台模式"
     },
     {

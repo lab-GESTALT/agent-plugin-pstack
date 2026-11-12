@@ -1,14 +1,23 @@
 param([Parameter(Mandatory=$true)][string]$Root)
 $ErrorActionPreference = 'Stop'
 $errors = @()
+$details = @()
 $notes = @()
 $ccRel = Join-Path $Root 'plugins\pstack'
 $apRel = Join-Path $Root 'output'
 $map = Get-Content (Join-Path $PSScriptRoot '..\map.json') -Raw | ConvertFrom-Json
 
-# 待检模式 = map.residualPatterns + 变换表的 find 字面串;单一事实源,避免门与变换表脱节
-$patterns = @($map.residualPatterns)
-foreach ($t in $map.bodyTokens) { if ($patterns -notcontains $t.find) { $patterns += $t.find } }
+# 待检项 = map.residualPatterns + 变换表;单一事实源,避免门与变换表脱节
+# id 用于白名单匹配与报错,regex 用于扫描:find 在 transform 里是字面串,在门里是正则,
+# 语义不同,故允许 gatePattern 单独收紧门的匹配精度而不影响散文替换
+$checks = @()
+foreach ($p in $map.residualPatterns) { $checks += [pscustomobject]@{ id = $p; regex = $p } }
+foreach ($t in $map.bodyTokens) {
+  if (@($checks.id) -contains $t.find) { continue }
+  $rx = $t.find
+  if ($t.PSObject.Properties.Name -contains 'gatePattern') { $rx = $t.gatePattern }
+  $checks += [pscustomobject]@{ id = $t.find; regex = $rx }
+}
 $allow = @($map.codeResidualAllowlist)
 
 # Root 可能是相对路径(CI 传 -Root .),统一解析成绝对路径后再与文件路径比对
@@ -31,21 +40,21 @@ $files = @(Get-ChildItem $cc -Recurse -File | Where-Object { $_.Length -lt 52428
   $raw = Get-Content $_.FullName -Raw -ErrorAction SilentlyContinue
   $null -ne $raw -and -not $raw.Contains([char]0)
 })
-foreach ($t in $patterns) {
-  $hits = @($files | Select-String -Pattern $t -ErrorAction SilentlyContinue)
+foreach ($c in $checks) {
+  $hits = @($files | Select-String -Pattern $c.regex -ErrorAction SilentlyContinue)
   $unexpected = @($hits | Where-Object {
     $rel = Get-RelPath $_.Path $cc
     $ok = $false
-    foreach ($a in $allow) { if ($a.path -eq $rel -and $a.patterns -contains $t) { $ok = $true } }
+    foreach ($a in $allow) { if ($a.path -eq $rel -and $a.patterns -contains $c.id) { $ok = $true } }
     -not $ok
   })
   if ($unexpected.Count -gt 0) {
-    $errors += ('gate1 residual: ' + $t + ' x' + $unexpected.Count)
+    $errors += ('gate1 residual: ' + $c.id + ' x' + $unexpected.Count)
     foreach ($h in ($unexpected | Select-Object -First 3)) {
-      $errors += ('  at ' + (Get-RelPath $h.Path $cc) + ':' + $h.LineNumber)
+      $details += [pscustomobject]@{ i = $errors.Count - 1; text = ('at ' + (Get-RelPath $h.Path $cc) + ':' + $h.LineNumber) }
     }
   } elseif ($hits.Count -gt 0) {
-    $notes += ('gate1 allowed residual: ' + $t + ' x' + $hits.Count)
+    $notes += ('gate1 allowed residual: ' + $c.id + ' x' + $hits.Count)
   }
 }
 
@@ -141,7 +150,11 @@ else {
 foreach ($n in $notes) { Write-Output $n }
 if ($errors.Count -gt 0) {
   Write-Output ('GATES FAILED: ' + $errors.Count)
-  foreach ($e in $errors) { Write-Output ('  - ' + $e) }
+  for ($i = 0; $i -lt $errors.Count; $i++) {
+    Write-Output ('  - ' + $errors[$i])
+    foreach ($d in ($details | Where-Object { $_.i -eq $i })) { Write-Output ('      ' + $d.text) }
+  }
   exit 1
 }
-Write-Output ('GATES GREEN: ' + $skillDirs.Count + ' skills, ' + $patterns.Count + ' patterns, gates 1/2/3 passed')
+Write-Output ('GATES GREEN: ' + $skillDirs.Count + ' skills, ' + $checks.Count + ' patterns, gates 1/2/3 passed')
+exit 0
