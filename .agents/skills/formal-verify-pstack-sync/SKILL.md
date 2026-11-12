@@ -84,7 +84,7 @@ When the current code genuinely breaks a property, report it with the counterexa
 
 | Check | Covers | Last confirmed at commit | `sync.yml` SHA256 |
 | --- | --- | --- | --- |
-| `GreenConsistent`, `EventuallyPublished` | `.github/workflows/sync.yml`: Detect change, Transform, Record upstream, Commit, Tag and push, Publish release | `5af8037` | `8ac97c1f316e7fdfa79f83eff6e83ab14c2378391a1c2fdc4632b31a354428e8` |
+| `GreenConsistent`, `EventuallyPublished` | `.github/workflows/sync.yml`: Detect change, Transform, Record upstream, Commit, Tag and push, Publish release | `6a5b7b9` | `8ac97c1f316e7fdfa79f83eff6e83ab14c2378391a1c2fdc4632b31a354428e8` |
 
 The hash is the binding: it identifies the exact text the model was derived from even when the working tree is dirty and the commit column names an older revision. Advance the commit column after re-running on a clean tree.
 
