@@ -1,0 +1,12 @@
+{
+  "name": "fixture",
+  "owner": {
+    "name": "x"
+  },
+  "plugins": [
+    {
+      "name": "pstack",
+      "source": "./plugins/pstack"
+    }
+  ]
+}

@@ -1,0 +1,5 @@
+{
+  "name": "pstack",
+  "skills": "./skills/",
+  "agents": "./agents/"
+}

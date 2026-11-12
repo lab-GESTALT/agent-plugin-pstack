@@ -3,3 +3,5 @@ output/
 upstream/
 *.zip
 gate-report.txt
+# 验证 harness 的证据留在本地,不入仓;夹具与特征图是交付物,要入仓
+.agents/skills/*/artifacts/

@@ -1,0 +1,95 @@
+{
+  "note": "红/绿语料。must-block = 真实 Cursor 残留,修前修后都必须红;must-pass = 合法内容,门不得误杀。每条绑定 origin(真实历史失败或实测夹具),不写假想案例。",
+  "fixtures": [
+    {
+      "name": "tp-prose-cursor-path",
+      "kind": "must-block",
+      "class": "true-positive",
+      "origin": "map.json bodyTokens '~/.cursor/skills';散文里的 Cursor 路径必须被改写",
+      "expectMessage": "~/.cursor/skills"
+    },
+    {
+      "name": "tp-frontmatter-icon",
+      "kind": "must-block",
+      "class": "true-positive",
+      "origin": "map.json frontmatter.drop 'icon';residualPatterns 'icon: crown'",
+      "expectMessage": "icon: crown"
+    },
+    {
+      "name": "tp-frontmatter-mode",
+      "kind": "must-block",
+      "class": "true-positive",
+      "origin": "map.json frontmatter.moveToMetadata 'mode';residualPatterns 'mode: true'",
+      "expectMessage": "mode: true"
+    },
+    {
+      "name": "tp-models-bare",
+      "kind": "must-block",
+      "class": "A",
+      "origin": "issues #1-#5 / runs 36093277065,36378049435,36817633491,37178728199,37574669186: gate1 residual pstack-models\\.mdc x4。根提交 0161876 只有全路径 token,裸文件名形态无改写规则",
+      "expectMessage": "pstack-models"
+    },
+    {
+      "name": "tp-api2",
+      "kind": "must-block",
+      "class": "true-positive",
+      "origin": "map.json bodyTokens 'https://api2.cursor.sh/automations/webhook/';residualPatterns 'api2\\.cursor\\.sh'",
+      "expectMessage": "api2"
+    },
+    {
+      "name": "tp-name-mismatch",
+      "kind": "must-block",
+      "class": "true-positive",
+      "origin": "validate.ps1 gate2 name 必须等于目录名",
+      "expectMessage": "name mismatch"
+    },
+    {
+      "name": "fp-camel-askquestion",
+      "kind": "must-pass",
+      "class": "C",
+      "origin": "实测:transform.ps1:50 用大小写敏感 .Replace(),validate.ps1:44 用大小写不敏感 Select-String -Pattern;askQuestionHandler 不是 AskQuestion 工具名"
+    },
+    {
+      "name": "fp-ts-subagent-type",
+      "kind": "must-pass",
+      "class": "B",
+      "origin": "实测:transform.ps1:58 只改 *.md,validate.ps1:39 扫全部文本文件;.ts 里的程序字符串字面量 bodyToken 够不到"
+    },
+    {
+      "name": "fp-ts-general-purpose",
+      "kind": "must-pass",
+      "class": "B",
+      "origin": "实测:同 fp-ts-subagent-type,generalPurpose 作为代码里的类型名"
+    },
+    {
+      "name": "fp-body-css-color",
+      "kind": "must-pass",
+      "class": "D",
+      "origin": "实测:validate.ps1:62 的 (?m)^color: 扫全文而非 frontmatter;正文 fenced CSS 块顶格 color: red 被误判为 Cursor 字段"
+    },
+    {
+      "name": "fp-body-yaml-mode",
+      "kind": "must-pass",
+      "class": "D",
+      "origin": "实测:同 fp-body-css-color,正文 fenced YAML 块顶格 mode: session"
+    },
+    {
+      "name": "fp-new-sh-transcripts",
+      "kind": "must-pass",
+      "class": "B",
+      "origin": "实测:codeResidualAllowlist 按精确路径登记(validate.ps1:48),同类新脚本不继承豁免"
+    },
+    {
+      "name": "fp-loop-import",
+      "kind": "must-pass",
+      "class": "B",
+      "origin": "issue #6 / run 38354988119: gate1 residual /loop x1 at skills/poteto-mode/scripts/check-plan.test.ts:23;f4d587f 的 gatePattern 已修,此条是回归守卫"
+    },
+    {
+      "name": "fp-loop-test-other-path",
+      "kind": "must-pass",
+      "class": "B",
+      "origin": "实测:同 issue #6 的 /loop 字面量,但换一个未被白名单登记的路径;证明 f4d587f 是实例级修复"
+    }
+  ]
+}
