@@ -3,6 +3,7 @@ param(
   [string]$Fixture,
   [string]$Scenario = 'happy',
   [string]$RunId,
+  [string]$WorkflowPath,
   [switch]$KeepRoot
 )
 $ErrorActionPreference = 'Stop'
@@ -44,6 +45,10 @@ function BashPath([string]$p) { return ($p -replace '\\','/') }
 # 解析逻辑与 formal-verify-pstack-sync 共用 workflow.psm1,两个 harness 读到的必须是同一份文本。
 Import-Module (Join-Path $PSScriptRoot 'workflow.psm1') -Force -DisableNameChecking
 
+# 步骤文本只从这里取。-WorkflowPath 让判别性证明对一份改坏的副本跑同一条 drive,
+# 不必改动真实 sync.yml,也不必手抄一遍执行逻辑。
+function Get-Step([string]$name, [string]$From) { Get-WorkflowStep $name -Path $(if ($From) { $From } else { $WorkflowPath }) }
+
 # Actions 的 Linux 默认 shell 是 bash -e -o pipefail。替身必须用同一套执行语义:
 # 裸 bash 下,步骤里最后一条命令成功就会把前面的失败吞掉(release create 失败曾因此判绿)。
 function Step-Command([string]$cwd, [string]$sh, [string]$prelude = '') {
@@ -77,6 +82,12 @@ case "$1 $2" in
     exit 0 ;;
   "issue list")
     printf '%s' "$GH_EXISTING_ISSUE"; exit 0 ;;
+  "api "*)
+    if [ "$GH_API_FAIL" = "1" ]; then echo "stub: jobs api refused" >&2; exit 1; fi
+    printf '%s\n' "$GH_FAILED_STEPS"; exit 0 ;;
+  "run view"*)
+    if [ "$GH_LOG_FAIL" = "1" ]; then echo "stub: run log not retrievable" >&2; exit 1; fi
+    printf '%s\n' "$GH_FAILED_LOG"; exit 0 ;;
   "issue create"|"issue comment")
     printf '%s\n' "$*" >> "$GH_BODY_LOG"; exit 0 ;;
 esac
@@ -92,6 +103,20 @@ exit 0
 }
 
 $fixtureIndex = Get-Content (Join-Path $skillDir 'fixtures\index.json') -Raw | ConvertFrom-Json
+
+# 「上次同步态」的 pin 由生产步骤自己算,不由 harness 手推,也不读仓库里的 pin.json:
+# Record upstream 是这个状态的唯一所有者。仓库的 pin 可能正处在刻意的中间态,
+# 把它当前提会让 unchanged / self-heal 以看不懂的理由红,而代码其实是对的。
+function Invoke-RecordUpstream([string]$root, [string]$From) {
+  $step = Join-Path $root 'record-baseline.sh'
+  Set-Content -Path $step -Value (Get-Step 'Record upstream' -From $From) -Encoding utf8
+  $envOut = Join-Path $root 'record-baseline-env'
+  New-Item -ItemType File -Force -Path $envOut | Out-Null
+  $r = Invoke-Logged 'baseline-record' { $env:GITHUB_ENV = $envOut; & bash -c (Step-Command $root $step) }
+  if ($r.code -ne 0) { throw 'Record upstream failed; cannot derive a synced pin' }
+  return (Get-Content (Join-Path $root 'pin.json') -Raw | ConvertFrom-Json)
+}
+
 function Invoke-Fixture([string]$name, [string]$root) {
   $spec = @($fixtureIndex.fixtures | Where-Object { $_.name -eq $name }) | Select-Object -First 1
   if (-not $spec) { throw "unknown fixture: $name" }
@@ -147,6 +172,23 @@ try {
     $mutated = Invoke-Logged 'doctor-mutation' { & pwsh -NoProfile -File (Join-Path $skillDir 'helpers\doctor.ps1') }
     Remove-Item Env:GIT_CONFIG_COUNT, Env:GIT_CONFIG_KEY_0, Env:GIT_CONFIG_VALUE_0
     Assert 'ignore-swallowed fixtures are caught' ($mutated.code -eq 1 -and $mutated.text -match 'would ship') ("exit=" + $mutated.code)
+    # 判别性证明:去掉 clone URL 的凭据,doctor 必须抓到。匿名 clone 会被反爬配额 429 拒掉,
+    # 而这条故障发生在 harness 从不驱动的第一步,只有静态判据能守。
+    $wfCopy = Join-Path $scratch 'sync-anonymous.yml'
+    $wfText = Get-Content (Join-Path $repo '.github\workflows\sync.yml') -Raw
+    $anon = $wfText -replace 'https://x-access-token:\$\{GH_TOKEN\}@github\.com/', 'https://github.com/'
+    Assert 'mutation actually removed the credential' ($anon -ne $wfText) ''
+    Set-Content -Path $wfCopy -Value $anon -Encoding utf8 -NoNewline
+    $anonRun = Invoke-Logged 'doctor-anonymous' { & pwsh -NoProfile -File (Join-Path $skillDir 'helpers\doctor.ps1') -WorkflowPath $wfCopy }
+    Assert 'anonymous upstream fetch is caught' ($anonRun.code -eq 1 -and $anonRun.text -match 'authenticated') ("exit=" + $anonRun.code)
+    # 判别性证明:撤掉 actions 授权。告警步骤照样 exit 0,只是步骤名静默消失,
+    # 所以这条只能靠静态判据守。
+    $noPerm = $wfText -replace '(?m)^\s*actions:\s*read\s*\r?\n', ''
+    Assert 'mutation actually removed the actions grant' ($noPerm -ne $wfText) ''
+    $permCopy = Join-Path $scratch 'sync-no-actions-perm.yml'
+    Set-Content -Path $permCopy -Value $noPerm -Encoding utf8 -NoNewline
+    $permRun = Invoke-Logged 'doctor-no-actions-perm' { & pwsh -NoProfile -File (Join-Path $skillDir 'helpers\doctor.ps1') -WorkflowPath $permCopy }
+    Assert 'a missing actions permission is caught' ($permRun.code -eq 1 -and $permRun.text -match 'jobs API') ("exit=" + $permRun.code)
   }
 
   elseif ($Feature -eq 'rules') {
@@ -201,6 +243,13 @@ try {
     Copy-Item (Join-Path $repo 'pin.json') (Join-Path $scratch 'pin.json')
     Link-Upstream $scratch
     $pinPath = Join-Path $scratch 'pin.json'
+    if ($Scenario -in @('unchanged','release-missing','gh-fails')) {
+      # 这三条的前提是「pin 已同步」。现算,不继承仓库当时的状态。
+      $tf = { & pwsh -NoProfile -File (Join-Path $repo 'transform\scripts\transform.ps1') -Upstream (Join-Path $scratch 'upstream\pstack') -Out (Join-Path $scratch 'output') -OutCc $scratch }
+      $bt = Invoke-Logged 'baseline-transform' $tf
+      Assert 'baseline transform exit=0' ($bt.code -eq 0) ''
+      Invoke-RecordUpstream $scratch | Out-Null
+    }
     $pin = Get-Content $pinPath -Raw | ConvertFrom-Json
     $releases = "pstack-$($pin.version)-r1"
     if ($Scenario -eq 'changed') { $pin.pstackTree = '' }
@@ -212,7 +261,7 @@ try {
     $env:GH_RELEASES = $releases
     $env:GH_LIST_FAIL = if ($Scenario -eq 'gh-fails') { '1' } else { '0' }
     $step = Join-Path $scratch 'detect.sh'
-    Set-Content -Path $step -Value (Get-WorkflowStep 'Detect change') -Encoding utf8
+    Set-Content -Path $step -Value (Get-Step 'Detect change') -Encoding utf8
     $ghOut = Join-Path $scratch 'gh-output'
     New-Item -ItemType File -Force -Path $ghOut | Out-Null
     # 步骤按相对路径读 pin.json 与 upstream/,必须在 scratch 里跑,否则读到的是真仓库
@@ -224,6 +273,33 @@ try {
     Assert ("detect scenario={0} changed={1} want={2}" -f $Scenario, $changed, $want) ($changed -eq $want) ''
     $verdict['changed'] = $changed
     Assert 'detect exit=0' ($r.code -eq 0) ''
+    if ($Scenario -in @('unchanged','release-missing','gh-fails')) {
+      $verdict['standInSetup'] = @('synced pin derived by running the real Record upstream step against the local clone, not read from the repo')
+    }
+
+    if ($Scenario -eq 'unchanged') {
+      # 判别性证明:「已同步」这个前提必须真由 Record upstream 算出。让该步骤写出空树
+      # (历史上真实出现过的退化态),同一条 drive 必须立刻判有变更。
+      # 若 harness 自己编造基线,这个改动就不会有任何影响,证明也就无从成立。
+      $wfText = Get-Content (Join-Path $repo '.github\workflows\sync.yml') -Raw
+      $needle = '.pstackTree=$t'
+      Assert 'mutation target exists in Record upstream' ($wfText.Contains($needle)) ''
+      $mutWf = Join-Path $scratch 'sync-blank-tree.yml'
+      Set-Content -Path $mutWf -Value $wfText.Replace($needle, '.pstackTree=""') -Encoding utf8 -NoNewline
+      $mutRoot = Join-Path $scratch 'mut'
+      New-Item -ItemType Directory -Force -Path $mutRoot | Out-Null
+      Copy-Item $pinPath (Join-Path $mutRoot 'pin.json') -Force
+      Copy-Tree (Join-Path $scratch 'plugins') (Join-Path $mutRoot 'plugins')
+      Link-Upstream $mutRoot
+      Invoke-RecordUpstream $mutRoot -From $mutWf | Out-Null
+      $mutStep = Join-Path $mutRoot 'detect.sh'
+      Set-Content -Path $mutStep -Value (Get-Step 'Detect change' -From $mutWf) -Encoding utf8
+      $mutOut = Join-Path $mutRoot 'gh-output'
+      New-Item -ItemType File -Force -Path $mutOut | Out-Null
+      $mutRun = Invoke-Logged 'detect-blank-tree' { $env:GITHUB_OUTPUT = $mutOut; & bash -c (Step-Command $mutRoot $mutStep) }
+      $mutChanged = [string](@(Get-Content $mutOut) | Where-Object { $_ -match '^changed=' }) -replace '^changed=',''
+      Assert 'a Record step that drops the tree is caught' ($mutRun.code -eq 0 -and $mutChanged -eq 'yes') ("changed=" + $mutChanged)
+    }
   }
 
   elseif ($Feature -eq 'publish') {
@@ -240,16 +316,28 @@ try {
     Link-Upstream $work
     # 替身 setup:scratch 从一个真实的"上次同步态"起步。目标环境里"上游真的前进了"
     # 提供这个前提;本地必须显式构造,否则无变更可提交,走不到 commit/tag/release 的真实路径。
-    # self-heal 反过来:pin 已是当前态,要构造的是"产物相同但 release 缺失"。
-    $pinBaseline = if ($Scenario -eq 'self-heal') {
-      Get-Content (Join-Path $repo 'pin.json') -Raw | ConvertFrom-Json
+    # self-heal / tag-serial 反过来:pin 已是当前态,要构造的是"产物相同但 release 缺失"。
+    $synced = $Scenario -in @('self-heal','tag-serial')
+    $oldPin = ((& git -C $repo show '221395a:pin.json') -join "`n") | ConvertFrom-Json
+    if ($synced) {
+      Copy-Item (Join-Path $repo 'pin.json') (Join-Path $work 'pin.json') -Force
     } else {
-      ((& git -C $repo show '221395a:pin.json') -join "`n") | ConvertFrom-Json
+      $oldPin | ConvertTo-Json -Depth 6 | Set-Content (Join-Path $work 'pin.json') -Encoding utf8
     }
-    $pinBaseline | ConvertTo-Json -Depth 6 | Set-Content (Join-Path $work 'pin.json') -Encoding utf8
     $tf = { & pwsh -NoProfile -File (Join-Path $work 'transform\scripts\transform.ps1') -Upstream (Join-Path $work 'upstream\pstack') -Out (Join-Path $work 'output') -OutCc $work }
     $t = Invoke-Logged 'transform' $tf
     Assert 'transform exit=0' ($t.code -eq 0) ''
+    if ($synced) {
+      $pinBaseline = Invoke-RecordUpstream $work
+      if ($Scenario -eq 'tag-serial') {
+        # 同版本、不同树:只把 pstackTree 退回上一次同步的树。重跑只改 pin.json,
+        # 版本不变而树变了,正是生产里 r1 落后于 main 的状态。
+        $pinBaseline.pstackTree = [string]$oldPin.pstackTree
+      }
+      $pinBaseline | ConvertTo-Json -Depth 6 | Set-Content (Join-Path $work 'pin.json') -Encoding utf8
+    } else {
+      $pinBaseline = $oldPin
+    }
     $ccManPath = Join-Path $work 'plugins\pstack\.claude-plugin\plugin.json'
     $ccMan = Get-Content $ccManPath -Raw | ConvertFrom-Json
     # 本次运行会发布的版本,取自刚变换出的清单,不是旧 pin
@@ -272,12 +360,16 @@ try {
     Assert 'transform rerun exit=0' ($t2.code -eq 0) ''
     $verdict['standInSetup'] = @(
       'local bare remote replaces GitHub',
-      'gh replaced by the shared env-driven stub (release view/list/create, issue list/create/comment)',
-      "pin.json rewound to the previous-sync state (version $($pinBaseline.version)); baseline manifest version $publishedVersion",
+      'gh replaced by the shared env-driven stub (release view/list/create, issue list/create/comment, api, run view)',
+      $(if ($synced) { "synced pin derived by the real Record upstream step (version $($pinBaseline.version))" } else { "pin.json rewound to the previous-sync state (version $($pinBaseline.version))" }),
+      "baseline manifest version $publishedVersion",
       'transform run twice: once for the baseline commit, once to simulate upstream advancing',
       'a failed step aborts the remaining steps, as GitHub does without continue-on-error'
     )
-    if ($Scenario -in @('self-heal','tag-serial')) {
+    if ($Scenario -eq 'tag-serial') {
+      $verdict['standInSetup'] += 'pin.pstackTree rewound to the previous-sync tree while the version stays current'
+    }
+    if ($synced) {
       $verdict['standInSetup'] += "remote already carries pstack-$publishedVersion-r1 at the baseline commit"
     }
 
@@ -328,7 +420,7 @@ exit 1
       if ($aborted) { $stepResults[$name] = 'skipped'; continue }
       $slug = ($name -replace ' ','-').ToLowerInvariant()
       $sh = Join-Path $scratch "$slug.sh"
-      Set-Content -Path $sh -Value (Get-WorkflowStep $name) -Encoding utf8
+      Set-Content -Path $sh -Value (Get-Step $name) -Encoding utf8
       # Actions 把上一步的 GITHUB_ENV 注入后续步骤;这里照做,否则 VERSION/TAG 传不下去
       $r = Invoke-Logged $slug { $env:GITHUB_ENV = $envFile; & bash -c (Step-Command $work $sh "set -a && . '$(BashPath $envFile)' 2>/dev/null; set +a; ") }
       $stepResults[$name] = $r.code
@@ -398,32 +490,79 @@ exit 1
 
   elseif ($Feature -eq 'alert') {
     # 用真实失败的门输出驱动告警步骤:告警必须自带定位信息,不能只有 run 链接
+    # no-gate-report / no-log-available 覆盖门之前就失败的那一类:抓取、变换阶段红,没有 gate-report
+    $early = $Scenario -in @('no-gate-report','no-log-available')
     $fx = if ($Fixture) { $Fixture } else { 'tp-models-bare' }
-    $root = Join-Path $scratch 'repo'
-    Invoke-Fixture $fx $root | Out-Null
-    Copy-Item (Join-Path $evidence "validate-$fx.txt") (Join-Path $scratch 'gate-report.txt') -Force
-    Link-Upstream $scratch
+    if ($Scenario -in @('open-issue','no-open-issue')) {
+      $root = Join-Path $scratch 'repo'
+      Invoke-Fixture $fx $root | Out-Null
+      Copy-Item (Join-Path $evidence "validate-$fx.txt") (Join-Path $scratch 'gate-report.txt') -Force
+      Link-Upstream $scratch
+    } elseif (-not $early) { throw "unknown alert scenario: $Scenario" }
+    # 抓取失败时克隆根本不存在,upstream 标题只能是 unknown。链上真实克隆会把这条前提抹掉。
     New-GhStub (Join-Path $scratch 'bin') | Out-Null
     $ghLog = $env:GH_LOG
-    if ($Scenario -eq 'open-issue') { $env:GH_EXISTING_ISSUE = '6' }
-    elseif ($Scenario -eq 'no-open-issue') { $env:GH_EXISTING_ISSUE = '' }
-    else { throw "unknown alert scenario: $Scenario" }
+    if ($Scenario -eq 'open-issue') { $env:GH_EXISTING_ISSUE = '6' } else { $env:GH_EXISTING_ISSUE = '' }
+    if ($early) {
+      $env:GH_FAILED_STEPS = 'Fetch upstream'
+      $env:GH_API_FAIL = ''
+      # 生产里这一步的真实输出:匿名 clone 撞上反爬配额
+      $env:GH_FAILED_LOG = "Fetch upstream`tfatal: unable to access 'https://github.com/cursor/plugins.git/': The requested URL returned error: 429"
+      $env:GH_LOG_FAIL = if ($Scenario -eq 'no-log-available') { '1' } else { '' }
+    } else {
+      $env:GH_FAILED_STEPS = 'Validate gates'
+      $env:GH_LOG_FAIL = ''
+    }
     $env:GITHUB_SERVER_URL = 'https://github.com'
     $env:GITHUB_REPOSITORY = 'lab-GESTALT/agent-plugin-pstack'
     $env:GITHUB_RUN_ID = '0'
     $sh = Join-Path $scratch 'alert.sh'
-    Set-Content -Path $sh -Value (Get-WorkflowStep 'Alert on failure') -Encoding utf8
+    Set-Content -Path $sh -Value (Get-Step 'Alert on failure') -Encoding utf8
     $r = Invoke-Logged 'alert' { & bash -c (Step-Command $scratch $sh) }
     Assert 'alert step exit=0' ($r.code -eq 0) ''
     $calls = if (Test-Path $ghLog) { @(Get-Content $ghLog) } else { @() }
     $body = if (Test-Path $env:GH_BODY_LOG) { (Get-Content $env:GH_BODY_LOG -Raw) } else { '' }
     $wantCmd = if ($Scenario -eq 'open-issue') { 'issue comment 6' } else { 'issue create' }
     Assert ("alert uses {0}" -f $wantCmd) (@($calls | Where-Object { $_ -like "$wantCmd*" }).Count -gt 0) ($calls -join ' | ')
-    Assert 'alert body carries gate output' ($body -match 'Gate output:' -and $body -match 'gate1 residual') ''
-    $spec = @($fixtureIndex.fixtures | Where-Object { $_.name -eq $fx }) | Select-Object -First 1
-    $wantPattern = [string]$spec.expectMessage
-    Assert ("alert body names the failing pattern ({0})" -f $wantPattern) ($body -match [regex]::Escape($wantPattern)) ''
+    if ($early) {
+      Assert 'alert body names the failed step' ($body -match 'Failed step: Fetch upstream') ''
+      if ($Scenario -eq 'no-log-available') {
+        # 日志尚未归档时也必须明说,不能静默退回裸链接
+        Assert 'alert says the log is unavailable instead of going bare' ($body -match 'not retrievable') ''
+      } else {
+        Assert 'alert body carries the failed-step log' ($body -match 'Failed step output:' -and $body -match '429') ''
+      }
+      Assert 'alert issue title falls back to unknown upstream' (@($calls | Where-Object { $_ -like '*upstream unknown*' }).Count -gt 0) ($calls -join ' | ')
+    } else {
+      Assert 'alert body carries gate output' ($body -match 'Gate output:' -and $body -match 'gate1 residual') ''
+      $spec = @($fixtureIndex.fixtures | Where-Object { $_.name -eq $fx }) | Select-Object -First 1
+      $wantPattern = [string]$spec.expectMessage
+      Assert ("alert body names the failing pattern ({0})" -f $wantPattern) ($body -match [regex]::Escape($wantPattern)) ''
+    }
     $verdict['ghCalls'] = $calls
+    if ($early) { $verdict['standInSetup'] = @('no gate-report.txt and no upstream clone (failure preceded the gates)') }
+
+    if ($Scenario -eq 'no-gate-report') {
+      # 判别性证明:这是历史上真实存在过的告警步骤(只给 run 链接)。冻结成红夹具,
+      # 不是随手改坏当前步骤 —— 上面的断言必须能把这个真实旧版本判红,否则它只是装饰。
+      $bareStep = @'
+NEW=$(git -C upstream rev-parse HEAD 2>/dev/null || echo unknown)
+BODY="pstack sync pipeline failed. See run: ${GITHUB_SERVER_URL}/${GITHUB_REPOSITORY}/actions/runs/${GITHUB_RUN_ID}. pin.json unchanged; next cron will retry."
+EXISTING=$(gh issue list --state open --limit 100 --json number,title --jq '[.[] | select(.title | startswith("sync failed:"))][0].number' || true)
+if [ -n "$EXISTING" ] && [ "$EXISTING" != "null" ]; then
+  gh issue comment "$EXISTING" --body "upstream ${NEW}: ${BODY}" || echo "::warning::alert comment failed"
+else
+  gh issue create --title "sync failed: upstream ${NEW}" --body "$BODY" || echo "::warning::alert create failed"
+fi
+'@
+      $bareSh = Join-Path $scratch 'alert-bare.sh'
+      Set-Content -Path $bareSh -Value $bareStep -Encoding utf8
+      $env:GH_BODY_LOG = Join-Path $evidence 'gh-body-bare.log'
+      $bareRun = Invoke-Logged 'alert-bare' { & bash -c (Step-Command $scratch $bareSh) }
+      $bareBody = if (Test-Path $env:GH_BODY_LOG) { (Get-Content $env:GH_BODY_LOG -Raw) } else { '' }
+      Assert 'historical bare-link alert still runs' ($bareRun.code -eq 0) ("exit=" + $bareRun.code)
+      Assert 'bare-link alert is caught by the locatability assertion' (($bareBody -notmatch 'Failed step:') -and ($bareBody -notmatch 'Failed step output:') -and ($bareBody -notmatch 'Gate output:')) ''
+    }
   }
 
   $verdict['scratch'] = $scratch

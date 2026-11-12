@@ -129,10 +129,15 @@ $verdict['coverage'] = [ordered]@{
     'git 层面的 push 竞争与 rebase 重试(由 verify-pstack-sync -Feature publish -Scenario push-rejected 用真实 git 驱动)',
     'tag 树与远端树的逐字节比对、zip 内容(同上,-Feature publish / -Feature transform)',
     '变换规则与三个门(由 verify-pstack-sync -Feature corpus / rules / transform 覆盖)',
+    '告警 issue 的正文能否定位故障(由 verify-pstack-sync -Feature alert 覆盖,含门之前就失败的两条)',
     'GitHub cron 是否真的触发(仓库内无强制器,见 AGENTS.md 的已知缺口)'
   )
   bounds     = 'MaxV=2 个上游版本, MaxFails=2 次失败, MaxUp=1 次上游前进; 失败预算用尽后步骤必须成功'
   syncCommit = (& git -C $repo rev-parse HEAD).Trim()
+  # HEAD 不足以标识被判定的文本:工作区脏时,提交号指向的是另一份 sync.yml。
+  # 逐字节哈希把证据绑到真正读过的那份内容上。
+  syncSha256 = (Get-FileHash (Join-Path $repo '.github\workflows\sync.yml') -Algorithm SHA256).Hash.ToLower()
+  syncDirty  = [bool](& git -C $repo status --porcelain -- '.github/workflows/sync.yml')
 }
 $verdict | ConvertTo-Json -Depth 8 | Set-Content (Join-Path $evidence 'verdict.json') -Encoding utf8
 Write-Output ("EVIDENCE: " + $evidence)

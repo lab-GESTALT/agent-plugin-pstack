@@ -53,11 +53,11 @@ If an anchor disappears (`gh release list`, `git commit`, `gh release create`, `
 
 The derivation was tested against real breaks, not only against synthetic switches. Two scratch edits to `sync.yml` were each caught and then reverted: deleting the `MATCH` decision while keeping the release listing, and keeping the `self-heal` log line while deleting `CHANGED=yes`. The second is why `SelfHeal` keys on the assignment: `CHANGED=yes` also appears unconditionally at the top of the step, so matching that string alone is vacuous. Both breaks produced the same counterexample — run 1 pushes `main` and `pin.json` forward and then fails before publishing; run 2 clones the same subtree, `Detect change` short-circuits to green, and no release ever appears.
 
-Each model action names the workflow step it stands for: `Detect` → Detect change, `Transform` → Transform, `Record` → Record upstream, `Commit` → Commit, `Push` and `Tag` → Tag and push, `Release` → Publish release. `StartRun` stands for `Fetch upstream`, which clones once per run; `clonedV` is that fixed clone, and every read inside the run uses it.
+Each model action names the workflow step it stands for: `Detect` → Detect change, `Transform` → Transform, `Record` → Record upstream, `Commit` → Commit, `Push` and `Tag` → Tag and push, `Release` → Publish release. `StartRun` stands for `Fetch upstream`, which clones once per run; `clonedV` is that fixed clone, and every read inside the run uses it. `StartRun` also models the fetch itself failing — a rate limit or a network error turns the run red before `Detect change`, and the pin does not move.
 
 ## Bounds and assumptions
 
-- `MaxV = 2` upstream versions, `MaxUp = 1` upstream advance, `MaxFails = 2` failures. 559 distinct states for `current`.
+- `MaxV = 2` upstream versions, `MaxUp = 1` upstream advance, `MaxFails = 2` failures. 585 distinct states for `current`.
 - A failure budget makes "failures eventually stop" a bounded assumption rather than a fairness promise. Once it is exhausted, steps must succeed.
 - `WF_vars(Next)` gives weak fairness: a continuously enabled step eventually fires.
 - One version number stands for one `pstack` subtree and its artifact. Release identity is the version, not the tag serial.
@@ -82,11 +82,13 @@ When the current code genuinely breaks a property, report it with the counterexa
 
 ## Coverage record
 
-| Check | Covers | Last confirmed at commit |
-| --- | --- | --- |
-| `GreenConsistent`, `EventuallyPublished` | `.github/workflows/sync.yml`: Detect change, Transform, Record upstream, Commit, Tag and push, Publish release | `5af8037` |
+| Check | Covers | Last confirmed at commit | `sync.yml` SHA256 |
+| --- | --- | --- | --- |
+| `GreenConsistent`, `EventuallyPublished` | `.github/workflows/sync.yml`: Detect change, Transform, Record upstream, Commit, Tag and push, Publish release | `5af8037` | `8ac97c1f316e7fdfa79f83eff6e83ab14c2378391a1c2fdc4632b31a354428e8` |
 
-Move the sync commit forward **only after** you have confirmed the model still describes the code at the new commit — re-read the changed steps against the action table above, re-derive the switches, and re-run. If a step was renamed, reordered, split, or given a new guard, the model needs updating first. `verdict.json` records the commit each run actually saw.
+The hash is the binding: it identifies the exact text the model was derived from even when the working tree is dirty and the commit column names an older revision. Advance the commit column after re-running on a clean tree.
+
+Move the sync commit forward **only after** you have confirmed the model still describes the code at the new commit — re-read the changed steps against the action table above, re-derive the switches, and re-run. If a step was renamed, reordered, split, or given a new guard, the model needs updating first. `verdict.json` records the commit each run actually saw, plus `syncSha256` and `syncDirty`: a dirty working tree means the commit alone does not identify the text that was checked, so the hash is the binding.
 
 For bringing the verification back in line after changes that did not recheck it, use `/maintain-formal-verification-skill`.
 

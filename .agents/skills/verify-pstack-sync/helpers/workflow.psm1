@@ -2,8 +2,10 @@
 # 都从这里取 run: 块,不各抄一份解析逻辑,否则两个 harness 会对同一步骤读出不同文本。
 $script:Repo = (Resolve-Path (Join-Path $PSScriptRoot '..\..\..\..')).ProviderPath
 
-function Get-WorkflowStep([string]$stepName) {
-  $lines = Get-Content (Join-Path $script:Repo '.github\workflows\sync.yml')
+function Get-WorkflowStep([string]$stepName, [string]$Path) {
+  # -Path 只给判别性证明用:对一份改坏的副本读取同一步骤,不必改动真实 sync.yml
+  $file = if ($Path) { $Path } else { Join-Path $script:Repo '.github\workflows\sync.yml' }
+  $lines = Get-Content $file
   $start = -1
   for ($i = 0; $i -lt $lines.Count; $i++) {
     if ($lines[$i] -match ('^\s*-\s*name:\s*' + [regex]::Escape($stepName) + '\s*$')) { $start = $i; break }

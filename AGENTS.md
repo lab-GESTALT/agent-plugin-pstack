@@ -14,6 +14,7 @@
 
 | 规则 | 强制器 | 会红的证明 |
 | --- | --- | --- |
+| 上游抓取必须带凭据,匿名 clone 会被反爬配额拒掉 | `doctor.ps1` 检查 `Fetch upstream` 的 clone URL | `-Feature doctor`(去掉 URL 凭据的副本必须让 doctor 退出 1) |
 | 一个令牌只有一种匹配语义,变换与门共用 | `transform/scripts/rules.psm1` | `-Feature corpus`(fp-loop-import / fp-loop-test-other-path) |
 | 散文/代码分界只有一个来源 | `map.json` 的 `gate.proseExtensions` → `Get-FileScope` | `-Feature corpus`(fp-ts-* 必绿、tp-prose-cursor-path 必红) |
 | 产物不得残留 Cursor 内部标记 | `map.json` 的 `residualPatterns` → gate1 | `-Feature corpus`(tp-models-bare / tp-api2) |
@@ -33,7 +34,9 @@
 | push 被拒必须 rebase 重试,冲突必须红 | `Tag and push` 的 `rebase_onto_remote` | `-Feature publish -Scenario push-rejected`(断言重试分支真的跑了) |
 | 同版本同树重跑复用已有 tag,不造空标签 | `Tag and push` 的 HEAD_SHA 比对 | `-Feature publish -Scenario self-heal` |
 | 同版本不同树必须递增序号,不覆盖已发布的 tag | `Tag and push` 的远端序号查询 | `-Feature publish -Scenario tag-serial`(把 sha 比对换成非空判断即红) |
-| 告警必须自带定位信息,不能只有 run 链接 | `Alert on failure` 引用 gate-report.txt | `-Feature alert`(body 含失败 pattern) |
+| 告警必须自带定位信息,门之前就失败也一样 | `Alert on failure` 取 jobs API 步骤名 + gate-report/失败日志 | `-Feature alert -Scenario no-gate-report`(冻结的裸链接旧版本必须被判红) |
+| 步骤用到的 API 必须在 permissions 里授权,未列出的作用域为 none | `doctor.ps1` 检查 jobs API 用法与 `actions: read` | `-Feature doctor`(撤掉 actions 授权的副本必须让 doctor 退出 1) |
+| 验证前提由生产步骤现算,不继承仓库当时的状态 | harness 跑真实 `Record upstream` 得出已同步 pin | `-Feature detect -Scenario unchanged`(让 Record 写空树,必须立刻判有变更) |
 | 替身执行语义必须与 Actions 一致 | harness `bash -e -o pipefail` + 失败中止后续 | `-Feature publish -Scenario release-fails`(裸 bash 下会误绿) |
 | 公开面不得含内部内容 | public-face-gate(仓库外),push 前 `range origin/main..HEAD` | 该工具自带的 red/green 语料 |
 

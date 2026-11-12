@@ -1,7 +1,9 @@
+param([string]$WorkflowPath)
 $ErrorActionPreference = 'Stop'
 $skillDir = (Resolve-Path (Join-Path $PSScriptRoot '..')).ProviderPath
 $repo = (Resolve-Path (Join-Path $skillDir '..\..\..')).ProviderPath
 $bad = @()
+Import-Module (Join-Path $PSScriptRoot 'workflow.psm1') -Force -DisableNameChecking
 
 function Check([string]$label, [bool]$ok, [string]$detail) {
   Write-Host ("{0} {1}{2}" -f $(if ($ok) {'ok  '} else {'BAD '}), $label, $(if ($detail) {" -- $detail"} else {''}))
@@ -50,13 +52,28 @@ if ($idx) {
   Check 'every fixture would ship (not swallowed by an ignore rule)' ($unshippable.Count -eq 0) (($unshippable | ForEach-Object { $_.name }) -join ', ')
 }
 
-$wf = Join-Path $repo '.github\workflows\sync.yml'
+$wf = if ($WorkflowPath) { $WorkflowPath } else { Join-Path $repo '.github\workflows\sync.yml' }
 Check 'sync.yml present' (Test-Path $wf) ''
 if (Test-Path $wf) {
   $names = @('Detect change','Record upstream','Commit','Tag and push','Publish release','Alert on failure')
   $text = Get-Content $wf -Raw
   $absent = @($names | Where-Object { $text -notmatch ('-\s*name:\s*' + [regex]::Escape($_)) })
   Check 'all harness-driven steps still exist in sync.yml' ($absent.Count -eq 0) ($absent -join ', ')
+  # 匿名 clone 走 GitHub 对数据中心 IP 的反爬配额,会被 429 拒掉,整条管线在第一步就红。
+  # 判据落在「URL 带凭据」上,不是落在步骤名或注释上;步骤读不出来同样判坏,不默认健康。
+  $fetchAuth = $false
+  try {
+    $fetch = Get-WorkflowStep 'Fetch upstream' -Path $wf
+    $fetchAuth = ($fetch -match 'x-access-token:\$\{GH_TOKEN\}@') -or ($fetch -match 'http\.extraheader')
+  } catch {}
+  Check 'upstream fetch is authenticated (anonymous clone gets rate-limited)' $fetchAuth ''
+  # 告警读 jobs API 取失败步骤名。存在 permissions 块时未列出的作用域为 none,
+  # 缺 actions: read 会让步骤名静默消失,而告警本身仍然 exit 0。判据落在「步骤用了 API 且授权到位」。
+  $jobsApi = $false
+  try { $jobsApi = (Get-WorkflowStep 'Alert on failure' -Path $wf) -match 'gh api .*actions/runs/' } catch {}
+  if ($jobsApi) {
+    Check 'alert can read the jobs API (actions permission granted)' ($text -match '(?m)^\s*actions:\s*(read|write)\s*$') 'add actions: read to the permissions block'
+  }
 }
 
 Write-Host ($(if ($bad.Count -eq 0) {'DOCTOR: healthy'} else {'DOCTOR: ' + $bad.Count + ' problem(s)'}))

@@ -4,6 +4,7 @@ A maintainer runs the pipeline and gets two installable products from one upstre
 
 ## Sub-features
 
+- `transform-fetch` obtains the upstream tree with an authenticated clone, so the run is not refused by GitHub's limit on anonymous traffic from datacenter IPs.
 - `transform-ap` produces `output/plugin.json` with the AP 1.0 `$schema` and only contract-allowed keys.
 - `transform-cc` produces `plugins/pstack/.claude-plugin/plugin.json` plus `skills/` and `agents/`.
 - `transform-extension` preserves the unmodified upstream manifest under `output/com.cursor/plugin.json`.
@@ -27,6 +28,7 @@ Preconditions:
 - `doctor.ps1` exits 0.
 - `upstream/pstack` exists and its HEAD equals `pin.json.commit`.
 
+- **Authenticated fetch.** Run `pwsh -NoProfile -File .agents/skills/verify-pstack-sync/helpers/drive.ps1 -Feature doctor -RunId doctor-fetch`. Expect `upstream fetch is authenticated` to be ok, and the mutation proof `anonymous upstream fetch is caught`: a scratch copy of `sync.yml` with the credential stripped from the clone URL must make doctor exit 1.
 - **Full transform.** Run `pwsh -NoProfile -File .agents/skills/verify-pstack-sync/helpers/drive.ps1 -Feature transform -RunId transform-1`. `verdict.json` shows `transform exit=0`, `gates exit=0 on real upstream`, `CC LICENSE present`, `AP LICENSE present`, `skill parity` with equal counts, and `committed CC artifact equals recomputed output`. The captured `transform.txt` ends with `OK: <scratch>/output / <scratch> (<n> skills)`.
 - **No drift in the committed tree.** The `committed CC artifact equals recomputed output` assertion compares every file under the repo's `plugins/pstack/` against the freshly produced one, normalizing CRLF. A non-empty detail list names the drifted paths. This is the enforcer for the convention that generated content is never hand-edited.
 - **Skill parity value.** Read `skills` from `verdict.json`. It must equal the number of directories under `upstream/pstack/skills` plus any injected asset skill.
@@ -41,3 +43,4 @@ Preconditions:
 - `.claude-plugin/marketplace.json` is written only when missing, so a transform run will not repair a hand-broken marketplace.
 - Body-token replacement applies only to the prose extensions declared in `map.json` `gate.proseExtensions`. A Cursor-specific string inside a `.ts`, `.sh`, or `.json` file survives the transform unchanged; see [gates](./gates.md) for how that is handled.
 - A stale local `output/` from an older upstream version produces a skill-parity failure that looks like a regression but is not. Delete `output/` and re-transform before judging.
+- No drive ever executes `Fetch upstream`; the harness links the local clone instead. A fetch failure is therefore invisible to every other feature, and doctor's static check is its only enforcer. An anonymous clone from a shared runner IP is refused with HTTP 429, the run dies before `Detect change`, and no gate report is produced — the alert issue then carries a git error rather than a validation failure.

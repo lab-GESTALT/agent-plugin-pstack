@@ -62,13 +62,15 @@ Init ==
 (* Fetch upstream 在 Detect change 之前跑,一次运行只克隆一次。              *)
 (* clonedV 就是那次克隆固定的上游版本:本运行里 Detect / Record / Push 读的   *)
 (* 都是它,不是「此刻的上游」。上游中途前进不会改变本次运行看到的内容。       *)
+(* 抓取本身也会失败(限流、网络):此时运行在 Detect 之前就红,pin不动。      *)
 (***************************************************************************)
 StartRun ==
   /\ phase = "idle"
-  /\ clonedV' = up
-  /\ phase' = "detect"
+  /\ \/ /\ clonedV' = up /\ phase' = "detect" /\ UNCHANGED failBudget
+     \/ /\ failBudget > 0 /\ failBudget' = failBudget - 1 /\ phase' = "red"
+        /\ UNCHANGED clonedV
   /\ UNCHANGED <<up, pinV, pinT, mainV, tagV, released, changed, localV,
-                 localCommitted, failBudget, upAdvances>>
+                 localCommitted, upAdvances>>
 
 (***************************************************************************)
 (* Detect change:子树哈希不同 => 有变更。                                  *)

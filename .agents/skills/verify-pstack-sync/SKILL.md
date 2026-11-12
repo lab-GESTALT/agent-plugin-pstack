@@ -26,9 +26,11 @@ Run this first whenever anything looks off, and again after any failed drive:
 pwsh -NoProfile -File .agents/skills/verify-pstack-sync/helpers/doctor.ps1
 ```
 
-It is read-only. It checks the toolchain, that the clone's HEAD equals `pin.json.commit`, that `map.json` and the fixture index parse, that every fixture overlays an artifact tree (`plugins/` or `output/`), that every fixture would actually ship rather than being swallowed by an ignore rule, and that every step the harness drives still exists in `sync.yml`. Exit 0 means the instance is worth driving. A stale clone is the most common cause of a misleading result: refresh it with `git -C upstream fetch --depth 1 origin main && git -C upstream reset --hard FETCH_HEAD` only when you intend to verify against newer upstream.
+It is read-only. It checks the toolchain, that the clone's HEAD equals `pin.json.commit`, that `map.json` and the fixture index parse, that every fixture overlays an artifact tree (`plugins/` or `output/`), that every fixture would actually ship rather than being swallowed by an ignore rule, that the upstream fetch is authenticated, and that every step the harness drives still exists in `sync.yml`. Exit 0 means the instance is worth driving. A stale clone is the most common cause of a misleading result: refresh it with `git -C upstream fetch --depth 1 origin main && git -C upstream reset --hard FETCH_HEAD` only when you intend to verify against newer upstream.
 
 The shippable-fixture check has a reproducible mutation proof: `-Feature doctor` runs doctor once against the real repo, then again with a temporary `core.excludesFile` containing an unanchored `output/`. The second run must exit 1 naming the AP fixtures. Without that check, an ignore rule can hide a fixture locally while a fresh clone silently loses it and the corpus still reports PASS. The check asks git about the ignore rules themselves (`check-ignore --no-index`), not about the index: once a fixture is committed, an index-based check is permanently true and would stop catching the next swallowed fixture.
+
+`-Feature doctor` carries two more mutation proofs against copies of `sync.yml`, run with `-WorkflowPath`: stripping the credential from the upstream clone URL must exit 1 naming the authenticated-fetch check, and removing `actions: read` must exit 1 naming the jobs API check. No drive ever executes `Fetch upstream` — the harness links the local clone — and a missing permission leaves the alert exiting 0 with the step name silently gone, so these static checks are the only enforcers for either failure.
 
 ## Drive
 
@@ -68,6 +70,11 @@ pwsh -NoProfile -File .agents/skills/verify-pstack-sync/helpers/drive.ps1 -Featu
 # the real Alert on failure block, fed a genuinely failing gate report
 pwsh -NoProfile -File .agents/skills/verify-pstack-sync/helpers/drive.ps1 -Feature alert -Scenario no-open-issue
 pwsh -NoProfile -File .agents/skills/verify-pstack-sync/helpers/drive.ps1 -Feature alert -Scenario open-issue
+
+# failure before the gates: no gate report, no clone. Also proves the historical
+# bare-link version of the step is rejected by the locatability assertion.
+pwsh -NoProfile -File .agents/skills/verify-pstack-sync/helpers/drive.ps1 -Feature alert -Scenario no-gate-report
+pwsh -NoProfile -File .agents/skills/verify-pstack-sync/helpers/drive.ps1 -Feature alert -Scenario no-log-available
 ```
 
 Extracted steps run under `bash -e -o pipefail` — the Actions default shell on Linux — with the working directory set to the scratch root, and a failed step aborts the rest of the job. Both details are load-bearing: under plain `bash` a trailing `rm -f` masks a refused `gh release create`, and reading `pin.json` from the repository root instead of the scratch root proves nothing about the scenario.
@@ -83,7 +90,7 @@ Every drive writes to `.agents/skills/verify-pstack-sync/artifacts/<RunId>/`:
 - `verdict.json` — feature, scenario, each assertion with pass/fail, and the observed state (remote head, tag name, tag tree vs remote tree, tag/pin/manifest versions, whether a release was created).
 - `commands.txt` — every command with its exit code.
 - `<step>.txt` — full stdout+stderr of each driven command, named after the fixture or workflow step.
-- `gh-calls.log`, `gh-body.log` — for `publish` and `alert`, the exact `gh` invocations and issue bodies.
+- `gh-calls.log`, `gh-body.log` — for `publish` and `alert`, the exact `gh` invocations and issue bodies. `gh-body-bare.log` holds the historical bare-link body next to the current one.
 
 Proof standard: a drive proves behavior only when it asserts on the **remote** state a downstream consumer would see, not on the scratch working tree. `publish` reads `pin.json` and the plugin manifest back out of the bare remote with `git show main:<path>`. Capture the action and the resulting state together; a green exit code alone is not evidence. Only `Alert on failure` still swallows its own error, deliberately, because the job is already red. Success is derived from observed `gh` calls and step exit codes, never from the scenario name, and a scenario that depends on a race asserts that the branch actually ran.
 
@@ -96,7 +103,11 @@ Automatic, in a `finally` block, on success and on failure alike. Junctions and 
 ## Helpers
 
 - `helpers/doctor.ps1` — read-only health check, exit 0 healthy.
-- `helpers/drive.ps1` — the driver. `-Feature gates|corpus|rules|doctor|transform|detect|publish|alert`, `-Fixture <name>`, `-Scenario <name>`, `-RunId <id>`, `-KeepRoot`.
+- `helpers/drive.ps1` — the driver. `-Feature gates|corpus|rules|doctor|transform|detect|publish|alert`, `-Fixture <name>`, `-Scenario <name>`, `-RunId <id>`, `-WorkflowPath <file>`, `-KeepRoot`.
+
+`-WorkflowPath` points every step read at a different workflow file, so a mutated copy can be driven without editing `sync.yml`. The built-in mutation proofs use the same mechanism.
+
+Scenarios that need an "already synced" pin derive it by running the real `Record upstream` step against the local clone. They do not read the repository's `pin.json`, so a deliberately mid-sync pin — a blank `pstackTree` used to force a full resync — neither breaks the drives nor makes doctor unhealthy.
 
 Both are invoked exactly as shown above; neither needs a build step.
 

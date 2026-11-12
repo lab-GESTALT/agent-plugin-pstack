@@ -8,6 +8,9 @@ on:
 permissions:
   contents: write
   issues: write
+  # Alert on failure 读 jobs API 取失败步骤名。写了 permissions 块之后未列出的作用域一律为 none,
+  # 少了这一行,告警里的步骤名会静默消失。
+  actions: read
 
 # 同一时刻只跑一个同步,避免并发抢同一个 tag 序号
 concurrency:
@@ -27,7 +30,9 @@ jobs:
       - name: Fetch upstream
         run: |
           rm -rf upstream
-          git clone --depth 1 --filter=blob:none --sparse https://github.com/cursor/plugins.git upstream
+          # 匿名 clone 走的是 GitHub 对数据中心 IP 的反爬配额,会被 429 拒掉,整条管线在第一步就红。
+          # 带上 GITHUB_TOKEN 走已认证配额;该 token 在 Actions 日志里自动脱敏。
+          git clone --depth 1 --filter=blob:none --sparse "https://x-access-token:${GH_TOKEN}@github.com/cursor/plugins.git" upstream
           git -C upstream sparse-checkout set pstack
 
       - name: Detect change
@@ -158,11 +163,25 @@ jobs:
         run: |
           NEW=$(git -C upstream rev-parse HEAD 2>/dev/null || echo unknown)
           BODY="pstack sync pipeline failed. See run: ${GITHUB_SERVER_URL}/${GITHUB_REPOSITORY}/actions/runs/${GITHUB_RUN_ID}. pin.json unchanged; next cron will retry."
+          # 失败步骤名从 jobs API 取:运行中就能拿到,不依赖日志是否已归档
+          FAILED_STEPS=$(gh api "repos/${GITHUB_REPOSITORY}/actions/runs/${GITHUB_RUN_ID}/jobs" --jq '[.jobs[].steps[] | select(.conclusion=="failure") | .name] | join(", ")' 2>/dev/null || true)
+          if [ -n "$FAILED_STEPS" ]; then
+            BODY=$(printf '%s\n\nFailed step: %s' "$BODY" "$FAILED_STEPS")
+          fi
           # 带上失败门的实际输出,让 issue 自身可定位;FENCE 用单引号避免 bash 把反引号当命令替换
           # 用 printf 单行构造:块标量里不能出现顶格行,否则 YAML 解析失败
+          FENCE='```'
           if [ -f gate-report.txt ]; then
-            FENCE='```'
             BODY=$(printf '%s\n\nGate output:\n%s\n%s\n%s' "$BODY" "$FENCE" "$(tail -n 20 gate-report.txt)" "$FENCE")
+          else
+            # 门还没跑就失败时(抓取、变换)没有 gate-report。只给 run 链接等于没给定位信息,
+            # 所以退到失败步骤日志;日志尚未归档就明说,不静默退回裸链接。
+            FAILED_LOG=$(gh run view "$GITHUB_RUN_ID" --log-failed 2>/dev/null | tail -n 20 || true)
+            if [ -n "$FAILED_LOG" ]; then
+              BODY=$(printf '%s\n\nFailed step output:\n%s\n%s\n%s' "$BODY" "$FENCE" "$FAILED_LOG" "$FENCE")
+            else
+              BODY=$(printf '%s\n\nNo gate report was produced and the failed-step log is not retrievable yet.' "$BODY")
+            fi
           fi
           # 同一故障持续存在时并入同一 issue,不重复刷屏
           EXISTING=$(gh issue list --state open --limit 100 --json number,title --jq '[.[] | select(.title | startswith("sync failed:"))][0].number' || true)

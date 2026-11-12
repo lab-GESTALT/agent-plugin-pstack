@@ -10,6 +10,7 @@ A scheduled run decides whether upstream's `pstack` subtree actually moved. If i
 - `detect-scope` ignores upstream commits that touch directories other than `pstack`.
 - `detect-release-missing` reports `changed=yes` when the subtree hash matches but no release exists for the pinned version, so a publication that never landed is retried instead of short-circuited forever.
 - `detect-gh-unreachable` reports `changed=yes` when the release listing fails, biasing toward a redundant run rather than a silent skip.
+- `detect-baseline-derived` builds the "already synced" precondition by running the real `Record upstream` step, so the scenario does not depend on whatever state the repository's `pin.json` happens to be in.
 
 ## How to get to it (user POV)
 
@@ -24,7 +25,8 @@ Preconditions:
 - `doctor.ps1` exits 0.
 - `upstream/` resolves `HEAD:pstack` to a tree hash.
 
-- **Unchanged.** Run `pwsh -NoProfile -File .agents/skills/verify-pstack-sync/helpers/drive.ps1 -Feature detect -Scenario unchanged -RunId detect-1`. `verdict.json` shows `changed: "no"` and the assertion `detect scenario=unchanged changed=no want=no` passes.
+- **Unchanged.** Run `pwsh -NoProfile -File .agents/skills/verify-pstack-sync/helpers/drive.ps1 -Feature detect -Scenario unchanged -RunId detect-1`. `verdict.json` shows `changed: "no"` and the assertion `detect scenario=unchanged changed=no want=no` passes. The harness first transforms the local clone and runs the real `Record upstream` step to produce the synced pin, so this scenario needs no particular repository pin state.
+- **Discriminating proof, same command.** The `unchanged` drive then makes `Record upstream` write an empty `pstackTree` in a scratch copy of `sync.yml`, re-derives the baseline from it, and asserts `a Record step that drops the tree is caught` (`changed=yes`). If the harness invented its own baseline instead of running the step, this mutation would change nothing.
 - **Changed.** Run the same command with `-Scenario changed`. The harness empties `pstackTree` in a scratch copy of `pin.json`; expect `changed: "yes"`.
 - **Missing field.** Run with `-Scenario missing-field`. The harness removes `pstackTree` entirely; expect `changed: "yes"`.
 - **Release missing.** Run with `-Scenario release-missing`. The subtree hash still matches, but the `gh` stub reports no releases; expect `changed: "yes"` and `self-heal: no release published for pinned version` in `detect.txt`.
@@ -36,6 +38,8 @@ Preconditions:
 
 - A green run with `changed=no` exercises only the clone, the hash comparison, and the release listing. It is not evidence that the transform, the gates, or publication work. Do not cite a short-circuited cron as proof of a fix.
 - The scenarios mutate a scratch copy of `pin.json`, never the repository's. If `pin.json` in the working tree changes after a detect drive, something is wrong with the harness.
+- `unchanged`, `release-missing`, and `gh-fails` need a synced pin as their starting state. That state is derived by running `Record upstream`, not read from the repository. A deliberately mid-sync pin — a blank `pstackTree` used to force a full resync — therefore does not break these drives, and `doctor.ps1` does not treat it as unhealthy.
+- `-WorkflowPath <file>` points every step read in a drive at a different workflow file. Use it to drive a mutated copy without editing `sync.yml`; the built-in mutation proofs use the same mechanism.
 - The step reads `pin.json` and `upstream/` by relative path, so the harness runs it with its working directory set to the scratch root. Driving it from the repository root reads the real pin and proves nothing about the scenario.
 - `changed=` must actually appear in the `GITHUB_OUTPUT` file. An empty file means the assertions are reading nothing; the harness asserts the line exists before comparing its value.
 - The release check only runs when the subtree hash matches. A genuinely changed subtree skips it, so `release-missing` and `gh-fails` are the only scenarios that reach that branch.

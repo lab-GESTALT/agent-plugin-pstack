@@ -6,7 +6,7 @@ This directory is the maintained source for verifying the user-facing behavior o
 
 - Run from the repository root. All paths below are repository-relative.
 - `pwsh`, `git`, `jq`, `zip`, `bash` on PATH.
-- `upstream/` holds a sparse clone of `cursor/plugins` with `pstack` checked out, and its HEAD equals `pin.json.commit`.
+- `upstream/` holds a sparse clone of `cursor/plugins` with `pstack` checked out, and its HEAD equals `pin.json.commit`. `pin.pstackTree` may be blank or stale — scenarios that need a synced pin derive it by running the real `Record upstream` step, so a mid-sync pin is a valid starting state.
 - Run `pwsh -NoProfile -File .agents/skills/verify-pstack-sync/helpers/doctor.ps1` and require exit 0 before the first drive of a run.
 - Never drive against a scratch root left over from an earlier run. Each drive builds its own and removes it.
 - `detect`, `publish`, and `alert` drive a local bare remote with a shared `gh` stub. They never contact GitHub and never push to `origin` of this repository.
@@ -28,6 +28,7 @@ This directory is the maintained source for verifying the user-facing behavior o
 - Record the feature ID and the scenario or fixture name with every artifact. `verdict.json` carries both.
 - An exit code of 0 is not proof of publication. Assert on the resulting remote state, and derive success from observed calls and exit codes rather than from the scenario name.
 - A scenario name is not coverage. If a path is only reached under a race or a refusal, assert that the branch actually ran — for example that the push-retry warning appears in the step log.
+- A precondition the harness invents is not the product's precondition. Where a scenario needs a state the pipeline itself produces, run the step that produces it, and prove the derivation by mutating that step.
 - Report an unreachable path with the attempted command and the unmet precondition. Do not report a skipped entry point as verified through a different path.
 - These drives observe one run each. Whether a later run recovers from a red one is model-checked by the sibling `formal-verify-pstack-sync` skill; a green drive here does not establish it.
 
