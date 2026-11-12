@@ -5,19 +5,9 @@ $details = @()
 $notes = @()
 $ccRel = Join-Path $Root 'plugins\pstack'
 $apRel = Join-Path $Root 'output'
-$map = Get-Content (Join-Path $PSScriptRoot '..\map.json') -Raw | ConvertFrom-Json
-
-# 待检项 = map.residualPatterns + 变换表;单一事实源,避免门与变换表脱节
-# id 用于白名单匹配与报错,regex 用于扫描:find 在 transform 里是字面串,在门里是正则,
-# 语义不同,故允许 gatePattern 单独收紧门的匹配精度而不影响散文替换
-$checks = @()
-foreach ($p in $map.residualPatterns) { $checks += [pscustomobject]@{ id = $p; regex = $p } }
-foreach ($t in $map.bodyTokens) {
-  if (@($checks.id) -contains $t.find) { continue }
-  $rx = $t.find
-  if ($t.PSObject.Properties.Name -contains 'gatePattern') { $rx = $t.gatePattern }
-  $checks += [pscustomobject]@{ id = $t.find; regex = $rx }
-}
+Import-Module (Join-Path $PSScriptRoot 'rules.psm1') -Force -DisableNameChecking
+$map = Get-RuleMap
+$checks = @(Get-GateChecks)
 $allow = @($map.codeResidualAllowlist)
 
 # Root 可能是相对路径(CI 传 -Root .),统一解析成绝对路径后再与文件路径比对
@@ -36,25 +26,33 @@ if (-not (Test-Path $ccRel)) {
 $cc = (Resolve-Path -Path $ccRel).ProviderPath
 
 # ---- gate1: 残留扫描(全部文本文件,脚本类一并覆盖) ----
-$files = @(Get-ChildItem $cc -Recurse -File | Where-Object { $_.Length -lt 5242880 } | Where-Object {
+$files = @(Get-ChildItem $cc -Recurse -File | Where-Object { $_.Length -lt 5242880 } | ForEach-Object {
   $raw = Get-Content $_.FullName -Raw -ErrorAction SilentlyContinue
-  $null -ne $raw -and -not $raw.Contains([char]0)
+  if ($null -ne $raw -and -not $raw.Contains([char]0)) {
+    [pscustomobject]@{ Rel = (Get-RelPath $_.FullName $cc); Text = $raw; Lines = ($raw -split "\r?\n") }
+  }
 })
 foreach ($c in $checks) {
-  $hits = @($files | Select-String -Pattern $c.regex -ErrorAction SilentlyContinue)
+  $hits = @()
+  foreach ($f in $files) {
+    if (-not (Test-Check $c $f.Text)) { continue }
+    for ($i = 0; $i -lt $f.Lines.Count; $i++) {
+      if (Test-Check $c $f.Lines[$i]) { $hits += [pscustomobject]@{ Rel = $f.Rel; LineNumber = $i + 1 } }
+    }
+  }
   $unexpected = @($hits | Where-Object {
-    $rel = Get-RelPath $_.Path $cc
+    $rel = $_.Rel
     $ok = $false
-    foreach ($a in $allow) { if ($a.path -eq $rel -and $a.patterns -contains $c.id) { $ok = $true } }
+    foreach ($a in $allow) { if ($a.path -eq $rel -and $a.patterns -contains $c.Id) { $ok = $true } }
     -not $ok
   })
   if ($unexpected.Count -gt 0) {
-    $errors += ('gate1 residual: ' + $c.id + ' x' + $unexpected.Count)
+    $errors += ('gate1 residual: ' + $c.Id + ' x' + $unexpected.Count)
     foreach ($h in ($unexpected | Select-Object -First 3)) {
-      $details += [pscustomobject]@{ i = $errors.Count - 1; text = ('at ' + (Get-RelPath $h.Path $cc) + ':' + $h.LineNumber) }
+      $details += [pscustomobject]@{ i = $errors.Count - 1; text = ('at ' + $h.Rel + ':' + $h.LineNumber) }
     }
   } elseif ($hits.Count -gt 0) {
-    $notes += ('gate1 allowed residual: ' + $c.id + ' x' + $hits.Count)
+    $notes += ('gate1 allowed residual: ' + $c.Id + ' x' + $hits.Count)
   }
 }
 

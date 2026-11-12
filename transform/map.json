@@ -62,8 +62,8 @@
     {
       "find": "/loop",
       "replace": "循环执行直到谓词满足(间隔唤醒)",
-      "gatePattern": "(?<![\\w./-])/loop(?![\\w-])",
-      "note": "等价:CC/Cursor /loop,Codex 后台模式,其他 CLI harness goal/ralph"
+      "pattern": "(?<![\\w./-])/loop(?![\\w-])",
+      "note": "等价:CC/Cursor /loop,Codex 后台模式,其他 CLI harness goal/ralph。pattern 由变换与门共用,避免散文里的导入路径被改坏"
     },
     {
       "find": "~/.cursor/rules/pstack-models.mdc",

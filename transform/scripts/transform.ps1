@@ -5,7 +5,8 @@ param(
 )
 $ErrorActionPreference = 'Stop'
 $nl = [char]10
-$map = Get-Content (Join-Path $PSScriptRoot '..\map.json') -Raw | ConvertFrom-Json
+Import-Module (Join-Path $PSScriptRoot 'rules.psm1') -Force -DisableNameChecking
+$map = Get-RuleMap
 
 if (Test-Path $Out) { Remove-Item $Out -Recurse -Force }
 
@@ -46,9 +47,7 @@ function Set-Frontmatter([string]$path, [string]$nameValue) {
 }
 
 function Apply-BodyTokens([string]$file) {
-  $c = Get-Content $file -Raw
-  foreach ($t in $map.bodyTokens) { $c = $c.Replace([string]$t.find, [string]$t.replace) }
-  Set-Content -Path $file -Value $c -Encoding utf8
+  Set-Content -Path $file -Value (Apply-AllTokens (Get-Content $file -Raw)) -Encoding utf8
 }
 
 function Convert-SkillTree([string]$srcDir, [string]$dstDir, [string]$skillName) {

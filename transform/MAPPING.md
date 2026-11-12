@@ -26,11 +26,13 @@ transform.ps1 直接读取 map.json:manifest.keep 决定顶层保留字段,manif
 
 ## 验证门(三层,唯一闸门)
 
-gate1 残留扫描:扫描 plugins/pstack 下全部文本文件,模式集 = map.json 的 residualPatterns 加上 bodyTokens 的 find 串,门与变换表同源。
+gate1 残留扫描:扫描 plugins/pstack 下全部文本文件,待检项 = map.json 的 residualPatterns 加上 bodyTokens,门与变换表同源。
 
-同一个 find 串在两处的语义不同:transform.ps1 按**字面串**替换,validate.ps1 按**正则**匹配(Select-String,默认忽略大小写)。字面串够用的替换规则,直接当正则会误伤——例如 `/loop` 会命中导入路径 `./passes/loop-check.ts` 里的 `passes/loop-check`,与 Cursor 的 /loop 命令无关。需要收紧门的精度时,在该 bodyToken 上加 `gatePattern` 覆盖门用的正则,`find`/`replace` 保持不变,散文替换不受影响。`/loop` 的门正则 `(?<![\w./-])/loop(?![\w-])` 要求斜杠起始一个独立词元,因此只匹配命令用法,不匹配路径段。
+匹配语义只有一个解释者:transform/scripts/rules.psm1。它把每条 bodyToken 归一为 token spec——没有 `pattern` 字段时按**字面串、区分大小写**(StringComparison.Ordinal)匹配与替换,有 `pattern` 字段时按该正则匹配与替换。transform.ps1 与 validate.ps1 调用同一组函数,所以「变换按字面、门按正则」这类两处漂移不可能再出现。正则替换走 MatchEvaluator:替换文本是给文档读的散文,不该被解释成 `$1` 之类的分组引用。
 
-白名单与报错都按 `find`(令牌身份)匹配,不按正则串,所以收紧 gatePattern 不需要改动已有的 codeResidualAllowlist 登记。
+`/loop` 的 `pattern` 是 `(?<![\w./-])/loop(?![\w-])`,要求斜杠起始一个独立词元:命令用法改写,导入路径 `./passes/loop-check.ts` 原样保留。只收紧门、不收紧变换是不够的——那样散文里的路径会被改成 `./passes循环执行直到谓词满足(间隔唤醒)-check.ts`;共用解释者后两侧同时正确。
+
+白名单与报错都按 `find`(令牌身份)匹配,不按正则串,所以调整 pattern 不需要改动已有的 codeResidualAllowlist 登记。
 
 gate2 frontmatter 与 Agent Plugins 契约:每个 SKILL.md 的 name 等于目录名,每个 agents/*.md 的 name 等于文件名,frontmatter 不得残留 mode/icon/color/reminder/is_background 顶层字段(含引号写法)。两种产物都必须随上游 MIT 许可文本分发:plugins/pstack/LICENSE 无条件检查,output/LICENSE 在 AP 部分检查。output/ 存在时另查 AP 清单:顶层字段必须落在 apContract.allowedKeys 内、必需字段齐、$schema 等于 canonical id、name 符合规范正则与长度上限、author 字段受限、keywords 为字符串数组、LICENSE 随产物存在、AP 与 CC 的技能数一致。
 
