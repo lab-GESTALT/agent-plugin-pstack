@@ -83,6 +83,9 @@ foreach ($a in $agentFiles) {
   if ($bad.Count -gt 0) { $errors += ('gate2 cursor-only frontmatter field in agents/' + $a.Name) }
 }
 
+# ---- gate2(续): 许可文本随两种产物分发 ----
+if (-not (Test-Path (Join-Path $cc 'LICENSE'))) { $errors += 'gate2 CC missing LICENSE' }
+
 # ---- gate2(续): AP 1.0 清单契约 ----
 if (-not (Test-Path $apRel)) {
   $notes += 'gate2 AP checks skipped: output/ not generated (run transform.ps1 first)'

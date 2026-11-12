@@ -74,8 +74,8 @@ jobs:
         if: steps.detect.outputs.changed == 'yes'
         run: |
           # 固定提交身份:不依赖 github.actor(cron 与手动触发的 actor 语义不同)
-          git config user.name "TurnX-alt"
-          git config user.email "225419967+TurnX-alt@users.noreply.github.com"
+          git config user.name "lab-GESTALT"
+          git config user.email "lab-GESTALT@users.noreply.github.com"
           git add plugins .claude-plugin pin.json
           git commit -m "sync: pstack ${VERSION} (upstream ${UPSTREAM})" || echo "::warning::nothing to commit"
 

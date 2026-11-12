@@ -115,7 +115,7 @@ foreach ($pair in @(@('skills','skills'), @('agents','agents'))) {
 New-Item -ItemType Directory -Force -Path (Join-Path $OutCc '.claude-plugin') | Out-Null
 $marketPath = Join-Path $OutCc '.claude-plugin\marketplace.json'
 if (-not (Test-Path $marketPath)) {
-  $market = [ordered]@{ name='agent-plugin-pstack'; owner=[ordered]@{name='TurnX-alt'}; plugins=@([ordered]@{name='pstack'; source='./plugins/pstack'}) }
+  $market = [ordered]@{ name='agent-plugin-pstack'; owner=[ordered]@{name='lab-GESTALT'}; plugins=@([ordered]@{name='pstack'; source='./plugins/pstack'}) }
   $market | ConvertTo-Json -Depth 6 | Set-Content $marketPath -Encoding utf8
 }
 if (Test-Path (Join-Path $OutCc 'plugins\pstack')) { Remove-Item (Join-Path $OutCc 'plugins\pstack') -Recurse -Force }
@@ -124,5 +124,7 @@ $ccMan = [ordered]@{ name='pstack'; displayName='pstack (generic)'; version=[str
 $ccMan | ConvertTo-Json -Depth 4 | Set-Content (Join-Path $OutCc 'plugins\pstack\.claude-plugin\plugin.json') -Encoding utf8
 Copy-Item (Join-Path $Out 'skills') (Join-Path $OutCc 'plugins\pstack\skills') -Recurse -Force
 Copy-Item (Join-Path $Out 'agents') (Join-Path $OutCc 'plugins\pstack\agents') -Recurse -Force
+# CC 形态是入仓分发的派生产物,同样必须随上游许可文本分发
+Copy-Item $lic (Join-Path $OutCc 'plugins\pstack\LICENSE') -Force
 
 Write-Output ('OK: ' + $Out + ' / ' + $OutCc + ' (' + $actual + ' skills)')

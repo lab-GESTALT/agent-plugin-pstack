@@ -6,9 +6,9 @@
 |---|---|---|
 | 1 | mode / icon / color / reminder | mode → metadata.mode(session);reminder → metadata.reminder;icon/color 删除;文档标注「粘性会话语义不可移植,由 description 触发承接」 |
 | 2 | subagent_type + agents/ | agent 类型注册表;frontmatter 的 name 归一为文件名,is_background 移入 metadata;引用改写「以类型名 X 委派子代理」,生成点与注册名对齐;AP 顶层携带 agents/,CC 适配器映射进原生 agents/ |
-| 3 | AskQuestion | 「结构化提问(问题数组 + 选项 + 多选)」;等价表:DSH=ask_user_question、CC=AskUserQuestion、Codex=request_user_input、Cursor=AskQuestion |
-| 4 | /loop | 「循环执行直到谓词满足(间隔唤醒)」;等价:CC/Cursor=/loop、DSH=goal 机制或 ralph、Codex=后台模式 |
-| 5 | ~/.cursor/rules + pstack-models.mdc | 通用 .md 规则(frontmatter: description/globs/alwaysApply);角色模型 = harness 无关 pstack-models.json,全路径与裸文件名两种写法都改写;端放置:CC=CLAUDE.md、DSH=AGENTS.md、Codex=AGENTS.md |
+| 3 | AskQuestion | 「结构化提问(问题数组 + 选项 + 多选)」;等价表:CC=AskUserQuestion、Codex=request_user_input、Cursor=AskQuestion、其他 CLI harness=ask_user_question |
+| 4 | /loop | 「循环执行直到谓词满足(间隔唤醒)」;等价:CC/Cursor=/loop、Codex=后台模式、其他 CLI harness=goal 机制或 ralph |
+| 5 | ~/.cursor/rules + pstack-models.mdc | 通用 .md 规则(frontmatter: description/globs/alwaysApply);角色模型 = harness 无关 pstack-models.json,全路径与裸文件名两种写法都改写;端放置:CC=CLAUDE.md、Codex 与其他 CLI harness=AGENTS.md |
 | 6 | cursor-team-kit 依赖 | 打标「可选组件」,不捆依赖;等价能力:去 AI 味写作类技能 ≈ deslop,浏览器/CLI 控制类技能 ≈ control-cli/ui |
 | 7 | 产物 | map.json(机器)+ 本文件(人读),成对维护 |
 
@@ -32,7 +32,7 @@ gate1 残留扫描:扫描 plugins/pstack 下全部文本文件,模式集 = map.j
 
 白名单与报错都按 `find`(令牌身份)匹配,不按正则串,所以收紧 gatePattern 不需要改动已有的 codeResidualAllowlist 登记。
 
-gate2 frontmatter 与 Agent Plugins 契约:每个 SKILL.md 的 name 等于目录名,每个 agents/*.md 的 name 等于文件名,frontmatter 不得残留 mode/icon/color/reminder/is_background 顶层字段(含引号写法)。output/ 存在时另查 AP 清单:顶层字段必须落在 apContract.allowedKeys 内、必需字段齐、$schema 等于 canonical id、name 符合规范正则与长度上限、author 字段受限、keywords 为字符串数组、LICENSE 随产物存在、AP 与 CC 的技能数一致。
+gate2 frontmatter 与 Agent Plugins 契约:每个 SKILL.md 的 name 等于目录名,每个 agents/*.md 的 name 等于文件名,frontmatter 不得残留 mode/icon/color/reminder/is_background 顶层字段(含引号写法)。两种产物都必须随上游 MIT 许可文本分发:plugins/pstack/LICENSE 无条件检查,output/LICENSE 在 AP 部分检查。output/ 存在时另查 AP 清单:顶层字段必须落在 apContract.allowedKeys 内、必需字段齐、$schema 等于 canonical id、name 符合规范正则与长度上限、author 字段受限、keywords 为字符串数组、LICENSE 随产物存在、AP 与 CC 的技能数一致。
 
 gate3 CC 市场 dry-run:marketplace.json 与各插件清单必须可解析,name/owner 齐备;每个 plugin.source 必须存在且其 .claude-plugin/plugin.json 可解析;清单声明的 skills/agents 路径必须存在且非空。
 
