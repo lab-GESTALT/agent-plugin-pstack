@@ -63,6 +63,7 @@ pwsh -NoProfile -File .agents/skills/verify-pstack-sync/helpers/drive.ps1 -Featu
 pwsh -NoProfile -File .agents/skills/verify-pstack-sync/helpers/drive.ps1 -Feature publish -Scenario commit-fails
 pwsh -NoProfile -File .agents/skills/verify-pstack-sync/helpers/drive.ps1 -Feature publish -Scenario push-rejected
 pwsh -NoProfile -File .agents/skills/verify-pstack-sync/helpers/drive.ps1 -Feature publish -Scenario self-heal
+pwsh -NoProfile -File .agents/skills/verify-pstack-sync/helpers/drive.ps1 -Feature publish -Scenario tag-serial
 
 # the real Alert on failure block, fed a genuinely failing gate report
 pwsh -NoProfile -File .agents/skills/verify-pstack-sync/helpers/drive.ps1 -Feature alert -Scenario no-open-issue
@@ -105,4 +106,4 @@ Read [`features/README.md`](features/README.md) before driving, then the matchin
 
 ## Maintenance
 
-After changing `transform/`, `map.json`, or `sync.yml`, re-run `corpus` plus the feature you touched. Use `/maintain-verification-skill` for a full periodic pass over the map.
+After changing `transform/`, `map.json`, or `sync.yml`, re-run `corpus` plus the feature you touched. Changing the publication steps also requires re-running the sibling `formal-verify-pstack-sync` skill, which derives its model from the same `sync.yml` text. Use `/maintain-verification-skill` for a full periodic pass over the map.

@@ -29,6 +29,7 @@ This directory is the maintained source for verifying the user-facing behavior o
 - An exit code of 0 is not proof of publication. Assert on the resulting remote state, and derive success from observed calls and exit codes rather than from the scenario name.
 - A scenario name is not coverage. If a path is only reached under a race or a refusal, assert that the branch actually ran — for example that the push-retry warning appears in the step log.
 - Report an unreachable path with the attempted command and the unmet precondition. Do not report a skipped entry point as verified through a different path.
+- These drives observe one run each. Whether a later run recovers from a red one is model-checked by the sibling `formal-verify-pstack-sync` skill; a green drive here does not establish it.
 
 ## Feature entry contract
 

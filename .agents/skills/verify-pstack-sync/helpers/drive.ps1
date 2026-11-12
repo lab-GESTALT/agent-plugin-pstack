@@ -40,33 +40,9 @@ function Copy-Tree([string]$src, [string]$dst) {
 # bash 里反斜杠是转义符,插值前统一成正斜杠
 function BashPath([string]$p) { return ($p -replace '\\','/') }
 
-# 从 live sync.yml 抽取步骤的 run 块: harness 不复制 workflow 逻辑,避免第二份手工同步清单
-function Get-WorkflowStep([string]$stepName) {
-  $lines = Get-Content (Join-Path $repo '.github\workflows\sync.yml')
-  $start = -1
-  for ($i = 0; $i -lt $lines.Count; $i++) {
-    if ($lines[$i] -match ('^\s*-\s*name:\s*' + [regex]::Escape($stepName) + '\s*$')) { $start = $i; break }
-  }
-  if ($start -lt 0) { throw "step not found in sync.yml: $stepName" }
-  $runAt = -1
-  for ($i = $start + 1; $i -lt $lines.Count; $i++) {
-    if ($lines[$i] -match '^\s*-\s*name:') { break }
-    if ($lines[$i] -match '^(\s*)run:\s*\|\s*$') { $runAt = $i; $indent = $Matches[1].Length; break }
-  }
-  if ($runAt -lt 0) { throw "step has no literal run block: $stepName" }
-  $body = @()
-  for ($i = $runAt + 1; $i -lt $lines.Count; $i++) {
-    $ln = $lines[$i]
-    if ($ln.Trim() -ne '' ) {
-      $lead = ($ln -replace '^( *).*$','$1').Length
-      if ($lead -le $indent) { break }
-    }
-    $body += $ln.Substring([Math]::Min($indent + 2, $ln.Length))
-  }
-  $text = ($body -join "`n")
-  if ($text.Trim() -eq '') { throw "empty run block: $stepName" }
-  return $text
-}
+# 从 live sync.yml 抽取步骤的 run 块: harness 不复制 workflow 逻辑,避免第二份手工同步清单。
+# 解析逻辑与 formal-verify-pstack-sync 共用 workflow.psm1,两个 harness 读到的必须是同一份文本。
+Import-Module (Join-Path $PSScriptRoot 'workflow.psm1') -Force -DisableNameChecking
 
 # Actions 的 Linux 默认 shell 是 bash -e -o pipefail。替身必须用同一套执行语义:
 # 裸 bash 下,步骤里最后一条命令成功就会把前面的失败吞掉(release create 失败曾因此判绿)。
@@ -276,30 +252,39 @@ try {
     Assert 'transform exit=0' ($t.code -eq 0) ''
     $ccManPath = Join-Path $work 'plugins\pstack\.claude-plugin\plugin.json'
     $ccMan = Get-Content $ccManPath -Raw | ConvertFrom-Json
-    $ccMan.version = [string]$pinBaseline.version
+    # 本次运行会发布的版本,取自刚变换出的清单,不是旧 pin
+    $publishedVersion = [string]$ccMan.version
+    # tag-serial 要构造「同版本、不同树」:基线清单已是当前版本,只有 pin 仍是旧态,
+    # 重跑只改 pin.json —— 版本不变而树变了,正是生产里 r1 落后于 main 的状态。
+    $ccMan.version = if ($Scenario -eq 'tag-serial') { $publishedVersion } else { [string]$pinBaseline.version }
     $ccMan | ConvertTo-Json -Depth 6 | Set-Content $ccManPath -Encoding utf8
     & git -C $work add -A 2>&1 | Out-Null
     & git -C $work -c user.name=verify -c user.email=verify@local commit -q -m baseline 2>&1 | Out-Null
     & git -C $work push -q origin main 2>&1 | Out-Null
     $baseHead = (& git -C $work rev-parse HEAD).Trim()
-    if ($Scenario -eq 'self-heal') {
-      # 已有 tag 指向这棵树:自愈必须复用它,而不是再造一个指向同一棵树的 r2
-      & git -C $work tag "pstack-$($pinBaseline.version)-r1" $baseHead 2>&1 | Out-Null
-      & git -C $work push -q origin "refs/tags/pstack-$($pinBaseline.version)-r1" 2>&1 | Out-Null
+    if ($Scenario -in @('self-heal','tag-serial')) {
+      # 远端已有 r1 指向 baseline 树。self-heal 不产生新提交,必须复用它;
+      # tag-serial 产生新提交,HEAD 与 r1 不同,必须递增到 r2 而不是覆盖 r1。
+      & git -C $work tag "pstack-$publishedVersion-r1" $baseHead 2>&1 | Out-Null
+      & git -C $work push -q origin "refs/tags/pstack-$publishedVersion-r1" 2>&1 | Out-Null
     }
     $t2 = Invoke-Logged 'transform-rerun' $tf
     Assert 'transform rerun exit=0' ($t2.code -eq 0) ''
     $verdict['standInSetup'] = @(
       'local bare remote replaces GitHub',
       'gh replaced by the shared env-driven stub (release view/list/create, issue list/create/comment)',
-      "pin.json and plugin version set to the previous-sync state (version $($pinBaseline.version))",
+      "pin.json rewound to the previous-sync state (version $($pinBaseline.version)); baseline manifest version $publishedVersion",
       'transform run twice: once for the baseline commit, once to simulate upstream advancing',
       'a failed step aborts the remaining steps, as GitHub does without continue-on-error'
     )
+    if ($Scenario -in @('self-heal','tag-serial')) {
+      $verdict['standInSetup'] += "remote already carries pstack-$publishedVersion-r1 at the baseline commit"
+    }
 
     New-GhStub (Join-Path $scratch 'bin') | Out-Null
     $ghLog = $env:GH_LOG
-    $env:GH_RELEASES = ''
+    # tag-serial 下 r1 已发布:release view r2 必须落空,才会走到 create
+    $env:GH_RELEASES = if ($Scenario -eq 'tag-serial') { "pstack-$publishedVersion-r1" } else { '' }
     $env:GH_LIST_FAIL = '0'
     $env:GH_RELEASE_FAIL = if ($Scenario -eq 'release-fails') { '1' } else { '0' }
     if ($Scenario -eq 'commit-fails') {
@@ -333,7 +318,7 @@ exit 1
       & bash -c "chmod +x '$(BashPath $hook)'" | Out-Null
       $verdict['remoteAdvancer'] = $advancer
     }
-    elseif ($Scenario -notin @('happy','release-fails','self-heal')) { throw "unknown publish scenario: $Scenario" }
+    elseif ($Scenario -notin @('happy','release-fails','self-heal','tag-serial')) { throw "unknown publish scenario: $Scenario" }
 
     $envFile = Join-Path $scratch 'gh-env'
     New-Item -ItemType File -Force -Path $envFile | Out-Null
@@ -399,6 +384,14 @@ exit 1
         # 场景名不是证据:必须看到重试分支真的跑了,否则这条路径只是名义上被覆盖
         $pushLog = Get-Content (Join-Path $evidence 'tag-and-push.txt') -Raw
         Assert 'push rejection exercised the rebase-and-retry path' ($pushLog -match 'push rejected') ''
+      }
+      if ($Scenario -eq 'tag-serial') {
+        # 序号递增分支此前从未被驱动:每个 drive 都新建远端,只看得到 r1。
+        # 这里预置一个指向旧树的 r1,新提交必须落到 r2,且 r1 原地不动。
+        $r1 = "pstack-$publishedVersion-r1"
+        Assert 'tag serial incremented to r2' ($tagName -eq "pstack-$publishedVersion-r2") ($tags -join ', ')
+        Assert 'both tags are on the remote' ($tags.Count -eq 2) ($tags -join ', ')
+        Assert 'existing r1 still points at the baseline commit' ((& git -C $remote rev-parse ($r1 + '^{commit}')).Trim() -eq $baseHead) $baseHead
       }
     }
   }
