@@ -38,9 +38,26 @@ jobs:
           OLD=$(jq -r '.pstackTree // empty' pin.json)
           NEW=$(git -C upstream rev-parse HEAD)
           NEW_TREE=$(git -C upstream rev-parse HEAD:pstack)
+          PIN_VERSION=$(jq -r '.version // empty' pin.json)
           echo "old=$OLD" >> "$GITHUB_OUTPUT"
           echo "new=$NEW" >> "$GITHUB_OUTPUT"
-          if [ -n "$OLD" ] && [ "$OLD" = "$NEW_TREE" ]; then echo "changed=no" >> "$GITHUB_OUTPUT"; else echo "changed=yes" >> "$GITHUB_OUTPUT"; fi
+          CHANGED=yes
+          if [ -n "$OLD" ] && [ "$OLD" = "$NEW_TREE" ]; then CHANGED=no; fi
+          # 自愈:pin 说已同步,但该版本没有任何 release,下游就拿不到通用版产物。
+          # 只看子树哈希会让这种状态永远短路,所以发布缺失同样判为有变更。
+          if [ "$CHANGED" = no ] && [ -n "$PIN_VERSION" ]; then
+            if ! RELEASED=$(gh release list --limit 200 --json tagName --jq '.[].tagName'); then
+              # 查不到发布状态时往「重跑」方向倒:宁可多做一次,不可静默跳过发布
+              echo "::warning::cannot list releases; treating as changed so publication is retried"
+              RELEASED=""
+            fi
+            MATCH=$(printf '%s\n' "$RELEASED" | grep -c "^pstack-${PIN_VERSION}-r[0-9]" || true)
+            if [ "$MATCH" = 0 ]; then
+              CHANGED=yes
+              echo "self-heal: no release published for pinned version ${PIN_VERSION}"
+            fi
+          fi
+          echo "changed=$CHANGED" >> "$GITHUB_OUTPUT"
 
       - name: Transform
         if: steps.detect.outputs.changed == 'yes'
@@ -77,23 +94,63 @@ jobs:
           git config user.name "lab-GESTALT"
           git config user.email "lab-GESTALT@users.noreply.github.com"
           git add plugins .claude-plugin pin.json
-          git commit -m "sync: pstack ${VERSION} (upstream ${UPSTREAM})" || echo "::warning::nothing to commit"
+          # 「无变更」是显式判断,不是把 commit 的失败吞掉:自愈路径下产物本来就相同,
+          # 而真正的 commit 失败(钩子、身份、索引)必须让这一步红。
+          if git diff --cached --quiet; then
+            echo "nothing to commit: derived artifact already matches upstream"
+          else
+            git commit -m "sync: pstack ${VERSION} (upstream ${UPSTREAM})"
+          fi
 
       - name: Tag and push
         if: steps.detect.outputs.changed == 'yes'
         run: |
-          # checkout 不取 tag(fetch-tags: false),序号必须向远端查询,否则同版本二次同步会撞名
-          N=$(git ls-remote --tags origin "refs/tags/pstack-${VERSION}-r*" | wc -l)
-          T="pstack-${VERSION}-r$((N+1))"
+          # 远端可能在本次运行期间前进(人工推送)。先 rebase 再推,被拒则重取重试;
+          # 冲突不是瞬时故障,abort 后直接红,不做无意义的重试。
+          rebase_onto_remote() {
+            git fetch origin main
+            if ! git rebase origin/main; then
+              git rebase --abort
+              echo "::error::rebase onto origin/main conflicted; manual resolution required"
+              return 1
+            fi
+          }
+          rebase_onto_remote
+          if ! git push origin HEAD:main; then
+            echo "::warning::push rejected; refetch and retry once"
+            rebase_onto_remote
+            git push origin HEAD:main
+          fi
+          # checkout 不取 tag(fetch-tags: false),序号必须向远端查询,否则同版本二次同步会撞名。
+          # 推送后再查:此时远端状态才是权威的。
+          HEAD_SHA=$(git rev-parse HEAD)
+          REMOTE_TAGS=$(git ls-remote --tags origin "refs/tags/pstack-${VERSION}-r*")
+          # 同版本同树重跑(自愈)复用已有 tag,不制造指向同一棵树的空标签
+          # 用 here-string 而非管道:pipefail 下 break 提前关管道会让 printf 收到 SIGPIPE,整步误红
+          T=""
+          while read -r sha ref; do
+            if [ "$sha" = "$HEAD_SHA" ]; then T="${ref#refs/tags/}"; break; fi
+          done <<< "$REMOTE_TAGS"
+          if [ -z "$T" ]; then
+            N=$(printf '%s\n' "$REMOTE_TAGS" | grep -c 'refs/tags/' || true)
+            T="pstack-${VERSION}-r$((N+1))"
+            git tag "$T"
+            git push origin "refs/tags/$T"
+          fi
           echo "TAG=$T" >> "$GITHUB_ENV"
-          git tag "$T"
-          git push origin HEAD:main --tags
 
       - name: Publish release
         if: steps.detect.outputs.changed == 'yes'
         run: |
           (cd output && zip -q -r "../${TAG}.zip" .)
-          gh release create "$TAG" "${TAG}.zip" --title "pstack ${VERSION} (generic)" --notes "Auto-synced from cursor/plugins@${UPSTREAM}" || echo "::warning::release create skipped"
+          # 发布失败必须让这一步红:此前 || echo 会把失败吞成绿,pin 却已前进,
+          # 下一次 cron 因树哈希相同而短路,通用版产物永远发不出去。
+          # 已存在则跳过,使自愈路径可重复执行而不撞名。
+          if gh release view "$TAG" >/dev/null 2>&1; then
+            echo "release ${TAG} already exists; skipping create"
+          else
+            gh release create "$TAG" "${TAG}.zip" --title "pstack ${VERSION} (generic)" --notes "Auto-synced from cursor/plugins@${UPSTREAM}"
+          fi
           rm -f "${TAG}.zip"
 
       - name: Alert on failure

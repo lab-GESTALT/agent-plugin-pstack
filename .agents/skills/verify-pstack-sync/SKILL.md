@@ -28,7 +28,7 @@ pwsh -NoProfile -File .agents/skills/verify-pstack-sync/helpers/doctor.ps1
 
 It is read-only. It checks the toolchain, that the clone's HEAD equals `pin.json.commit`, that `map.json` and the fixture index parse, that every fixture overlays an artifact tree (`plugins/` or `output/`), that every fixture would actually ship rather than being swallowed by an ignore rule, and that every step the harness drives still exists in `sync.yml`. Exit 0 means the instance is worth driving. A stale clone is the most common cause of a misleading result: refresh it with `git -C upstream fetch --depth 1 origin main && git -C upstream reset --hard FETCH_HEAD` only when you intend to verify against newer upstream.
 
-The shippable-fixture check has a reproducible mutation proof: `-Feature doctor` runs doctor once against the real repo, then again with a temporary `core.excludesFile` containing an unanchored `output/`. The second run must exit 1 naming the AP fixtures. Without that check, an ignore rule can hide a fixture locally while a fresh clone silently loses it and the corpus still reports PASS.
+The shippable-fixture check has a reproducible mutation proof: `-Feature doctor` runs doctor once against the real repo, then again with a temporary `core.excludesFile` containing an unanchored `output/`. The second run must exit 1 naming the AP fixtures. Without that check, an ignore rule can hide a fixture locally while a fresh clone silently loses it and the corpus still reports PASS. The check asks git about the ignore rules themselves (`check-ignore --no-index`), not about the index: once a fixture is committed, an index-based check is permanently true and would stop catching the next swallowed fixture.
 
 ## Drive
 
@@ -50,22 +50,28 @@ pwsh -NoProfile -File .agents/skills/verify-pstack-sync/helpers/drive.ps1 -Featu
 # real upstream -> both artifacts -> all three gates
 pwsh -NoProfile -File .agents/skills/verify-pstack-sync/helpers/drive.ps1 -Feature transform
 
-# the real Detect change block, three pin states
+# the real Detect change block: two pin states, the subtree short circuit, and the self-heal
 pwsh -NoProfile -File .agents/skills/verify-pstack-sync/helpers/drive.ps1 -Feature detect -Scenario unchanged
 pwsh -NoProfile -File .agents/skills/verify-pstack-sync/helpers/drive.ps1 -Feature detect -Scenario changed
 pwsh -NoProfile -File .agents/skills/verify-pstack-sync/helpers/drive.ps1 -Feature detect -Scenario missing-field
+pwsh -NoProfile -File .agents/skills/verify-pstack-sync/helpers/drive.ps1 -Feature detect -Scenario release-missing
+pwsh -NoProfile -File .agents/skills/verify-pstack-sync/helpers/drive.ps1 -Feature detect -Scenario gh-fails
 
 # the real Record/Commit/Tag-and-push/Publish blocks against a local bare remote
 pwsh -NoProfile -File .agents/skills/verify-pstack-sync/helpers/drive.ps1 -Feature publish -Scenario happy
 pwsh -NoProfile -File .agents/skills/verify-pstack-sync/helpers/drive.ps1 -Feature publish -Scenario release-fails
 pwsh -NoProfile -File .agents/skills/verify-pstack-sync/helpers/drive.ps1 -Feature publish -Scenario commit-fails
+pwsh -NoProfile -File .agents/skills/verify-pstack-sync/helpers/drive.ps1 -Feature publish -Scenario push-rejected
+pwsh -NoProfile -File .agents/skills/verify-pstack-sync/helpers/drive.ps1 -Feature publish -Scenario self-heal
 
 # the real Alert on failure block, fed a genuinely failing gate report
 pwsh -NoProfile -File .agents/skills/verify-pstack-sync/helpers/drive.ps1 -Feature alert -Scenario no-open-issue
 pwsh -NoProfile -File .agents/skills/verify-pstack-sync/helpers/drive.ps1 -Feature alert -Scenario open-issue
 ```
 
-`publish` and `alert` replace GitHub with a local bare remote and a `gh` stub. The stand-in setup, which the real target does not need, is recorded in each `verdict.json` under `standInSetup`: the pin and plugin version are rewound to the real historical sync state at commit `221395a` (version 0.15.32) so that a genuine advance exists to publish, and transform runs twice — once to build the baseline commit, once to simulate upstream moving forward. Everything else is the repo's own code: real `git commit`, real `git tag`, real `git push`, real `zip`.
+Extracted steps run under `bash -e -o pipefail` — the Actions default shell on Linux — with the working directory set to the scratch root, and a failed step aborts the rest of the job. Both details are load-bearing: under plain `bash` a trailing `rm -f` masks a refused `gh release create`, and reading `pin.json` from the repository root instead of the scratch root proves nothing about the scenario.
+
+`detect`, `publish`, and `alert` replace GitHub with a local bare remote and one shared `gh` stub whose behaviour is set entirely by environment variables. The stand-in setup, which the real target does not need, is recorded in each `verdict.json` under `standInSetup`: the pin and plugin version are rewound to the real historical sync state at commit `221395a` (version 0.15.32) so that a genuine advance exists to publish, and transform runs twice — once to build the baseline commit, once to simulate upstream moving forward. `self-heal` inverts the precondition and starts from the current pin, because it needs "artifacts identical, release missing". `push-rejected` injects the race with a `pre-push` hook, since advancing the remote during setup is absorbed by the step's opening rebase and never reaches the retry branch. Everything else is the repo's own code: real `git commit`, real `git tag`, real `git push`, real `zip`.
 
 Add `-KeepRoot` to leave the scratch root in place for inspection. It is the only mode that leaves residue; clean it yourself afterwards.
 
@@ -78,7 +84,7 @@ Every drive writes to `.agents/skills/verify-pstack-sync/artifacts/<RunId>/`:
 - `<step>.txt` — full stdout+stderr of each driven command, named after the fixture or workflow step.
 - `gh-calls.log`, `gh-body.log` — for `publish` and `alert`, the exact `gh` invocations and issue bodies.
 
-Proof standard: a drive proves behavior only when it asserts on the **remote** state a downstream consumer would see, not on the scratch working tree. `publish` reads `pin.json` and the plugin manifest back out of the bare remote with `git show main:<path>`. Capture the action and the resulting state together; a green exit code alone is not evidence, because two of the pipeline's steps swallow failures by design.
+Proof standard: a drive proves behavior only when it asserts on the **remote** state a downstream consumer would see, not on the scratch working tree. `publish` reads `pin.json` and the plugin manifest back out of the bare remote with `git show main:<path>`. Capture the action and the resulting state together; a green exit code alone is not evidence. Only `Alert on failure` still swallows its own error, deliberately, because the job is already red. Success is derived from observed `gh` calls and step exit codes, never from the scenario name, and a scenario that depends on a race asserts that the branch actually ran.
 
 `artifacts/` is gitignored. Evidence survives cleanup — the harness asserts this on every run.
 

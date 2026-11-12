@@ -18,16 +18,18 @@ $transcript = @()
 function Log([string]$line) { $script:transcript += $line; Write-Host $line }
 
 # 每个 drive 用独立 scratch;证据写在 skill 的 artifacts/ 下,cleanup 不碰它
+# 局部变量名不得与调用方脚本块里的变量重名:& $body 在 Invoke-Logged 的作用域里执行,
+# 重名会让脚本块读到本函数的局部值(GITHUB_OUTPUT 曾因此指向证据文件)。
 function Invoke-Logged([string]$name, [scriptblock]$body) {
-  $outFile = Join-Path $evidence "$name.txt"
+  $logFile = Join-Path $evidence "$name.txt"
   $prev = $ErrorActionPreference; $ErrorActionPreference = 'Continue'
-  $out = & $body 2>&1 | ForEach-Object { [string]$_ }
+  $captured = & $body 2>&1 | ForEach-Object { [string]$_ }
   $code = $LASTEXITCODE
   $ErrorActionPreference = $prev
-  $text = ($out -join "`n")
-  Set-Content -Path $outFile -Value $text -Encoding utf8
+  $text = ($captured -join "`n")
+  Set-Content -Path $logFile -Value $text -Encoding utf8
   Log ("[{0}] exit={1}" -f $name, $code)
-  return [pscustomobject]@{ code = $code; text = $text; file = $outFile }
+  return [pscustomobject]@{ code = $code; text = $text; file = $logFile }
 }
 
 function Copy-Tree([string]$src, [string]$dst) {
@@ -66,12 +68,51 @@ function Get-WorkflowStep([string]$stepName) {
   return $text
 }
 
+# Actions 的 Linux 默认 shell 是 bash -e -o pipefail。替身必须用同一套执行语义:
+# 裸 bash 下,步骤里最后一条命令成功就会把前面的失败吞掉(release create 失败曾因此判绿)。
+function Step-Command([string]$cwd, [string]$sh, [string]$prelude = '') {
+  return "cd '$(BashPath $cwd)' && " + $prelude + "bash -e -o pipefail '$(BashPath $sh)'"
+}
+
 function Link-Upstream([string]$root) {
   $src = Join-Path $repo 'upstream'
   if (-not (Test-Path $src)) { throw 'upstream clone missing; run: git clone --depth 1 --filter=blob:none --sparse https://github.com/cursor/plugins.git upstream && git -C upstream sparse-checkout set pstack' }
   $dst = Join-Path $root 'upstream'
   if ($IsWindows) { New-Item -ItemType Junction -Path $dst -Target $src | Out-Null }
   else { New-Item -ItemType SymbolicLink -Path $dst -Target $src | Out-Null }
+}
+
+# GitHub 的替身:一份 stub,行为全部由环境变量决定。detect/publish/alert 共用,
+# 不各抄一份,否则 stub 与真实 gh 的语义会分叉。
+function New-GhStub([string]$binDir) {
+  New-Item -ItemType Directory -Force -Path $binDir | Out-Null
+  $stub = @'
+#!/usr/bin/env bash
+printf '%s\n' "$*" >> "$GH_LOG"
+case "$1 $2" in
+  "release view")
+    if printf '%s\n' "$GH_RELEASES" | grep -qx "$3"; then exit 0; fi
+    exit 1 ;;
+  "release list")
+    if [ "$GH_LIST_FAIL" = "1" ]; then echo "stub: release list refused" >&2; exit 1; fi
+    printf '%s\n' "$GH_RELEASES"; exit 0 ;;
+  "release create")
+    if [ "$GH_RELEASE_FAIL" = "1" ]; then echo "stub: release create refused" >&2; exit 1; fi
+    exit 0 ;;
+  "issue list")
+    printf '%s' "$GH_EXISTING_ISSUE"; exit 0 ;;
+  "issue create"|"issue comment")
+    printf '%s\n' "$*" >> "$GH_BODY_LOG"; exit 0 ;;
+esac
+exit 0
+'@
+  $path = Join-Path $binDir 'gh'
+  Set-Content -Path $path -Value $stub -Encoding utf8 -NoNewline
+  & bash -c "chmod +x '$(BashPath $path)'" | Out-Null
+  $env:PATH = $binDir + [System.IO.Path]::PathSeparator + $env:PATH
+  $env:GH_LOG = Join-Path $evidence 'gh-calls.log'
+  $env:GH_BODY_LOG = Join-Path $evidence 'gh-body.log'
+  return $path
 }
 
 $fixtureIndex = Get-Content (Join-Path $skillDir 'fixtures\index.json') -Raw | ConvertFrom-Json
@@ -185,16 +226,24 @@ try {
     Link-Upstream $scratch
     $pinPath = Join-Path $scratch 'pin.json'
     $pin = Get-Content $pinPath -Raw | ConvertFrom-Json
+    $releases = "pstack-$($pin.version)-r1"
     if ($Scenario -eq 'changed') { $pin.pstackTree = '' }
     elseif ($Scenario -eq 'missing-field') { $pin.PSObject.Properties.Remove('pstackTree') }
-    elseif ($Scenario -ne 'unchanged') { throw "unknown detect scenario: $Scenario" }
+    elseif ($Scenario -eq 'release-missing') { $releases = '' }
+    elseif ($Scenario -notin @('unchanged','gh-fails')) { throw "unknown detect scenario: $Scenario" }
     $pin | ConvertTo-Json -Depth 6 | Set-Content $pinPath -Encoding utf8
+    New-GhStub (Join-Path $scratch 'bin') | Out-Null
+    $env:GH_RELEASES = $releases
+    $env:GH_LIST_FAIL = if ($Scenario -eq 'gh-fails') { '1' } else { '0' }
     $step = Join-Path $scratch 'detect.sh'
     Set-Content -Path $step -Value (Get-WorkflowStep 'Detect change') -Encoding utf8
-    $outFile = Join-Path $scratch 'gh-output'
-    New-Item -ItemType File -Force -Path $outFile | Out-Null
-    $r = Invoke-Logged 'detect' { $env:GITHUB_OUTPUT = $outFile; & bash $step }
-    $changed = (Get-Content $outFile | Where-Object { $_ -match '^changed=' }) -replace '^changed=',''
+    $ghOut = Join-Path $scratch 'gh-output'
+    New-Item -ItemType File -Force -Path $ghOut | Out-Null
+    # 步骤按相对路径读 pin.json 与 upstream/,必须在 scratch 里跑,否则读到的是真仓库
+    $r = Invoke-Logged 'detect' { $env:GITHUB_OUTPUT = $ghOut; & bash -c (Step-Command $scratch $step) }
+    $lines = @(Get-Content $ghOut)
+    Assert 'detect wrote changed= to GITHUB_OUTPUT' (@($lines | Where-Object { $_ -match '^changed=' }).Count -eq 1) ($lines -join ' | ')
+    $changed = [string](($lines | Where-Object { $_ -match '^changed=' }) -replace '^changed=','')
     $want = if ($Scenario -eq 'unchanged') { 'no' } else { 'yes' }
     Assert ("detect scenario={0} changed={1} want={2}" -f $Scenario, $changed, $want) ($changed -eq $want) ''
     $verdict['changed'] = $changed
@@ -213,84 +262,117 @@ try {
     Copy-Tree (Join-Path $repo '.claude-plugin') (Join-Path $work '.claude-plugin')
     Copy-Item (Join-Path $repo '.gitignore') (Join-Path $work '.gitignore')
     Link-Upstream $work
-    # 替身 setup:scratch 从真实历史同步态(221395a 的 pin)起步。目标环境里"上游真的前进了"
+    # 替身 setup:scratch 从一个真实的"上次同步态"起步。目标环境里"上游真的前进了"
     # 提供这个前提;本地必须显式构造,否则无变更可提交,走不到 commit/tag/release 的真实路径。
-    $oldPin = ((& git -C $repo show '221395a:pin.json') -join "`n") | ConvertFrom-Json
-    $oldPin | ConvertTo-Json -Depth 6 | Set-Content (Join-Path $work 'pin.json') -Encoding utf8
+    # self-heal 反过来:pin 已是当前态,要构造的是"产物相同但 release 缺失"。
+    $pinBaseline = if ($Scenario -eq 'self-heal') {
+      Get-Content (Join-Path $repo 'pin.json') -Raw | ConvertFrom-Json
+    } else {
+      ((& git -C $repo show '221395a:pin.json') -join "`n") | ConvertFrom-Json
+    }
+    $pinBaseline | ConvertTo-Json -Depth 6 | Set-Content (Join-Path $work 'pin.json') -Encoding utf8
     $tf = { & pwsh -NoProfile -File (Join-Path $work 'transform\scripts\transform.ps1') -Upstream (Join-Path $work 'upstream\pstack') -Out (Join-Path $work 'output') -OutCc $work }
     $t = Invoke-Logged 'transform' $tf
     Assert 'transform exit=0' ($t.code -eq 0) ''
     $ccManPath = Join-Path $work 'plugins\pstack\.claude-plugin\plugin.json'
     $ccMan = Get-Content $ccManPath -Raw | ConvertFrom-Json
-    $ccMan.version = [string]$oldPin.version
+    $ccMan.version = [string]$pinBaseline.version
     $ccMan | ConvertTo-Json -Depth 6 | Set-Content $ccManPath -Encoding utf8
     & git -C $work add -A 2>&1 | Out-Null
     & git -C $work -c user.name=verify -c user.email=verify@local commit -q -m baseline 2>&1 | Out-Null
     & git -C $work push -q origin main 2>&1 | Out-Null
     $baseHead = (& git -C $work rev-parse HEAD).Trim()
+    if ($Scenario -eq 'self-heal') {
+      # 已有 tag 指向这棵树:自愈必须复用它,而不是再造一个指向同一棵树的 r2
+      & git -C $work tag "pstack-$($pinBaseline.version)-r1" $baseHead 2>&1 | Out-Null
+      & git -C $work push -q origin "refs/tags/pstack-$($pinBaseline.version)-r1" 2>&1 | Out-Null
+    }
     $t2 = Invoke-Logged 'transform-rerun' $tf
     Assert 'transform rerun exit=0' ($t2.code -eq 0) ''
     $verdict['standInSetup'] = @(
       'local bare remote replaces GitHub',
-      'gh replaced by a stub that logs calls and can refuse release create',
-      "pin.json and plugin version rewound to 221395a (version $($oldPin.version)) to create a real previous-sync state",
-      'transform run twice: once for the baseline commit, once to simulate upstream advancing'
+      'gh replaced by the shared env-driven stub (release view/list/create, issue list/create/comment)',
+      "pin.json and plugin version set to the previous-sync state (version $($pinBaseline.version))",
+      'transform run twice: once for the baseline commit, once to simulate upstream advancing',
+      'a failed step aborts the remaining steps, as GitHub does without continue-on-error'
     )
 
-    $bin = Join-Path $scratch 'bin'
-    New-Item -ItemType Directory -Force -Path $bin | Out-Null
-    $ghLog = Join-Path $evidence 'gh-calls.log'
-    $ghStub = @'
-#!/usr/bin/env bash
-printf '%s\n' "$*" >> "$GH_LOG"
-if [ "$1" = "release" ] && [ "$2" = "create" ] && [ "$GH_RELEASE_FAIL" = "1" ]; then
-  echo "stub: release create refused" >&2; exit 1
-fi
-exit 0
-'@
-    Set-Content -Path (Join-Path $bin 'gh') -Value $ghStub -Encoding utf8 -NoNewline
-    & bash -c "chmod +x '$(BashPath (Join-Path $bin 'gh'))'" | Out-Null
+    New-GhStub (Join-Path $scratch 'bin') | Out-Null
+    $ghLog = $env:GH_LOG
+    $env:GH_RELEASES = ''
+    $env:GH_LIST_FAIL = '0'
+    $env:GH_RELEASE_FAIL = if ($Scenario -eq 'release-fails') { '1' } else { '0' }
     if ($Scenario -eq 'commit-fails') {
       $hook = Join-Path $work '.git\hooks\pre-commit'
       Set-Content -Path $hook -Value "#!/usr/bin/env bash`nexit 1`n" -Encoding utf8 -NoNewline
       & bash -c "chmod +x '$(BashPath $hook)'" | Out-Null
     }
-    elseif ($Scenario -notin @('happy','release-fails')) { throw "unknown publish scenario: $Scenario" }
+    elseif ($Scenario -eq 'push-rejected') {
+      # 竞争窗口在 rebase 之后、push 之前:setup 里先推进远端会被开场的 rebase 吸收,
+      # 根本走不到重试分支。用 pre-push 钩子在第一次 push 的瞬间推进远端并拒绝该次推送。
+      $other = Join-Path $scratch 'other'
+      & git clone -q $remote $other 2>&1 | Out-Null
+      Set-Content -Path (Join-Path $other 'REMOTE-ADVANCE.md') -Value "advanced by another writer`n" -Encoding utf8
+      & git -C $other add REMOTE-ADVANCE.md 2>&1 | Out-Null
+      & git -C $other -c user.name=other -c user.email=other@local commit -q -m 'remote advances' 2>&1 | Out-Null
+      $advancer = (& git -C $other rev-parse HEAD).Trim()
+      # 先把对象送进远端(侧 ref),钩子只需移动 main,不必在钩子里嵌套 push
+      & git -C $other push -q origin main:refs/heads/advancer 2>&1 | Out-Null
+      $hookBody = @'
+#!/usr/bin/env bash
+marker="$(git rev-parse --git-dir)/push-race-fired"
+if [ -e "$marker" ]; then exit 0; fi
+touch "$marker"
+git --git-dir='__REMOTE__' update-ref refs/heads/main __ADVANCER__
+echo "stub: remote advanced during push; rejecting" >&2
+exit 1
+'@
+      $hookBody = $hookBody.Replace('__REMOTE__', (BashPath $remote)).Replace('__ADVANCER__', $advancer)
+      $hook = Join-Path $work '.git\hooks\pre-push'
+      Set-Content -Path $hook -Value $hookBody -Encoding utf8 -NoNewline
+      & bash -c "chmod +x '$(BashPath $hook)'" | Out-Null
+      $verdict['remoteAdvancer'] = $advancer
+    }
+    elseif ($Scenario -notin @('happy','release-fails','self-heal')) { throw "unknown publish scenario: $Scenario" }
 
-    $env:PATH = $bin + [System.IO.Path]::PathSeparator + $env:PATH
-    $env:GH_LOG = $ghLog
-    $env:GH_RELEASE_FAIL = if ($Scenario -eq 'release-fails') { '1' } else { '0' }
     $envFile = Join-Path $scratch 'gh-env'
     New-Item -ItemType File -Force -Path $envFile | Out-Null
-    $stepResults = @{}
+    $stepResults = [ordered]@{}
+    $aborted = $false
     foreach ($name in @('Record upstream','Commit','Tag and push','Publish release')) {
+      if ($aborted) { $stepResults[$name] = 'skipped'; continue }
       $slug = ($name -replace ' ','-').ToLowerInvariant()
       $sh = Join-Path $scratch "$slug.sh"
       Set-Content -Path $sh -Value (Get-WorkflowStep $name) -Encoding utf8
       # Actions 把上一步的 GITHUB_ENV 注入后续步骤;这里照做,否则 VERSION/TAG 传不下去
-      $r = Invoke-Logged $slug { $env:GITHUB_ENV = $envFile; & bash -c "cd '$(BashPath $work)' && set -a && . '$(BashPath $envFile)' 2>/dev/null; set +a; bash '$(BashPath $sh)'"; }
+      $r = Invoke-Logged $slug { $env:GITHUB_ENV = $envFile; & bash -c (Step-Command $work $sh "set -a && . '$(BashPath $envFile)' 2>/dev/null; set +a; ") }
       $stepResults[$name] = $r.code
+      if ($r.code -ne 0) { $aborted = $true }
       if (Test-Path $envFile) { foreach ($ln in (Get-Content $envFile)) { if ($ln -match '^([^=]+)=(.*)$') { Set-Item -Path ("Env:" + $Matches[1]) -Value $Matches[2] } } }
     }
-    $allZero = @($stepResults.Values | Where-Object { $_ -ne 0 }).Count -eq 0
+    $allZero = -not $aborted
     # 下游消费者看的是远端,不是工作树:性质必须断言远端状态
     $remoteHead = (& git -C $remote rev-parse main).Trim()
     $remoteTree = (& git -C $remote rev-parse 'main^{tree}').Trim()
     $remotePin = ((& git -C $remote show 'main:pin.json') -join "`n") | ConvertFrom-Json
     $remoteMan = ((& git -C $remote show 'main:plugins/pstack/.claude-plugin/plugin.json') -join "`n") | ConvertFrom-Json
     $tags = @(& git -C $remote tag -l 'pstack-*')
-    $tagName = if ($tags.Count -gt 0) { $tags[-1] } else { $null }
-    $tagTree = if ($tagName) { (& git -C $remote rev-parse ($tagName + '^{tree}')).Trim() } else { '' }
+    $tagName = if ($env:TAG) { [string]$env:TAG } elseif ($tags.Count -gt 0) { $tags[-1] } else { $null }
+    $tagOnRemote = ($null -ne $tagName) -and ($tags -contains $tagName)
+    $tagTree = if ($tagOnRemote) { (& git -C $remote rev-parse ($tagName + '^{tree}')).Trim() } else { '' }
     $tagVersion = if ($tagName -match '^pstack-(.+)-r\d+$') { $Matches[1] } else { '' }
     $ghCalls = if (Test-Path $ghLog) { @(Get-Content $ghLog) } else { @() }
-    $releaseAttempted = @($ghCalls | Where-Object { $_ -match '^release create' }).Count -gt 0
-    $releaseSucceeded = $releaseAttempted -and $Scenario -ne 'release-fails'
+    # 发布成功由观察判定,不由 scenario 名字判定:名字是输入,不是证据
+    $releaseCreated = @($ghCalls | Where-Object { $_ -match '^release create' }).Count -gt 0
+    $releaseSucceeded = $releaseCreated -and ($stepResults['Publish release'] -eq 0)
     $remoteAdvanced = ($remoteHead -ne $baseHead)
     $versionAgree = ($tagVersion -eq [string]$remotePin.version) -and ([string]$remoteMan.version -eq [string]$remotePin.version)
-    $consistent = $releaseSucceeded -and $remoteAdvanced -and ($tagTree -eq $remoteTree) -and $versionAgree
+    $consistent = $releaseSucceeded -and $tagOnRemote -and ($tagTree -eq $remoteTree) -and $versionAgree
     $verdict['steps'] = $stepResults
     $verdict['remoteAdvanced'] = $remoteAdvanced
     $verdict['tag'] = $tagName
+    $verdict['tagOnRemote'] = $tagOnRemote
+    $verdict['remoteTagCount'] = $tags.Count
     $verdict['tagTreeEqualsRemoteTree'] = ($tagTree -eq $remoteTree)
     $verdict['remotePinVersion'] = [string]$remotePin.version
     $verdict['remoteManifestVersion'] = [string]$remoteMan.version
@@ -298,9 +380,27 @@ exit 0
     $verdict['releaseSucceeded'] = $releaseSucceeded
     Log ("  steps: " + (($stepResults.GetEnumerator() | ForEach-Object { "$($_.Key)=$($_.Value)" }) -join ' '))
     Log ("  remoteAdvanced=$remoteAdvanced tag=$tagName tagTree==remoteTree=$($tagTree -eq $remoteTree) versions(tag/pin/manifest)=$tagVersion/$($remotePin.version)/$($remoteMan.version) release=$releaseSucceeded")
-    # 性质: 全绿 => release 存在 且 远端 main 前进 且 tag 树==远端树 且 tag/pin/清单版本三者一致
+    # 性质: 全绿 => release 存在 且 tag 在远端 且 tag 树==远端树 且 tag/pin/清单版本三者一致
     $property = (-not $allZero) -or $consistent
     Assert 'green-run implies published artifact matches pinned tree' $property ("allStepsZero=$allZero scenario=$Scenario")
+    if ($Scenario -in @('release-fails','commit-fails')) {
+      # 判别性证明:这两条路径此前全绿却什么都没发布出去,现在必须红
+      Assert 'a failed publish step turns the run red' (-not $allZero) ''
+    } else {
+      Assert 'happy path stays green' $allZero ''
+      Assert 'release exists for the pushed tag' $releaseSucceeded ''
+      if ($Scenario -eq 'self-heal') {
+        Assert 'self-heal reuses the existing tag' ($tags.Count -eq 1) ($tags -join ', ')
+        Assert 'self-heal makes no empty commit' (-not $remoteAdvanced) ''
+      } else {
+        Assert 'remote main advanced' $remoteAdvanced ''
+      }
+      if ($Scenario -eq 'push-rejected') {
+        # 场景名不是证据:必须看到重试分支真的跑了,否则这条路径只是名义上被覆盖
+        $pushLog = Get-Content (Join-Path $evidence 'tag-and-push.txt') -Raw
+        Assert 'push rejection exercised the rebase-and-retry path' ($pushLog -match 'push rejected') ''
+      }
+    }
   }
 
   elseif ($Feature -eq 'alert') {
@@ -310,32 +410,17 @@ exit 0
     Invoke-Fixture $fx $root | Out-Null
     Copy-Item (Join-Path $evidence "validate-$fx.txt") (Join-Path $scratch 'gate-report.txt') -Force
     Link-Upstream $scratch
-    $bin = Join-Path $scratch 'bin'
-    New-Item -ItemType Directory -Force -Path $bin | Out-Null
-    $ghLog = Join-Path $evidence 'gh-calls.log'
-    $ghStub = @'
-#!/usr/bin/env bash
-printf '%s\n' "$*" >> "$GH_LOG"
-if [ "$1" = "issue" ] && [ "$2" = "list" ]; then printf '%s' "$GH_EXISTING_ISSUE"; exit 0; fi
-if [ "$1" = "issue" ] && { [ "$2" = "create" ] || [ "$2" = "comment" ]; }; then
-  printf '%s\n' "$*" >> "$GH_BODY_LOG"; exit 0
-fi
-exit 0
-'@
-    Set-Content -Path (Join-Path $bin 'gh') -Value $ghStub -Encoding utf8 -NoNewline
-    & bash -c "chmod +x '$(BashPath (Join-Path $bin 'gh'))'" | Out-Null
+    New-GhStub (Join-Path $scratch 'bin') | Out-Null
+    $ghLog = $env:GH_LOG
     if ($Scenario -eq 'open-issue') { $env:GH_EXISTING_ISSUE = '6' }
     elseif ($Scenario -eq 'no-open-issue') { $env:GH_EXISTING_ISSUE = '' }
     else { throw "unknown alert scenario: $Scenario" }
-    $env:PATH = $bin + [System.IO.Path]::PathSeparator + $env:PATH
-    $env:GH_LOG = $ghLog
-    $env:GH_BODY_LOG = (Join-Path $evidence 'gh-body.log')
     $env:GITHUB_SERVER_URL = 'https://github.com'
     $env:GITHUB_REPOSITORY = 'lab-GESTALT/agent-plugin-pstack'
     $env:GITHUB_RUN_ID = '0'
     $sh = Join-Path $scratch 'alert.sh'
     Set-Content -Path $sh -Value (Get-WorkflowStep 'Alert on failure') -Encoding utf8
-    $r = Invoke-Logged 'alert' { & bash -c "cd '$(BashPath $scratch)' && bash '$(BashPath $sh)'" }
+    $r = Invoke-Logged 'alert' { & bash -c (Step-Command $scratch $sh) }
     Assert 'alert step exit=0' ($r.code -eq 0) ''
     $calls = if (Test-Path $ghLog) { @(Get-Content $ghLog) } else { @() }
     $body = if (Test-Path $env:GH_BODY_LOG) { (Get-Content $env:GH_BODY_LOG -Raw) } else { '' }

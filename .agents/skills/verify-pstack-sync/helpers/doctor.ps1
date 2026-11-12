@@ -35,10 +35,17 @@ if ($idx) {
     -not ((Test-Path (Join-Path $fx 'plugins')) -or (Test-Path (Join-Path $fx 'output')))
   })
   Check 'every fixture overlays an artifact tree (plugins/ or output/)' ($missing.Count -eq 0) (($missing | ForEach-Object { $_.name }) -join ', ')
-  # 夹具是交付物:被忽略规则吞掉的夹具在本机看着正常,新克隆里根本不存在
+  # 夹具是交付物:被忽略规则吞掉的夹具在本机看着正常,新克隆里根本不存在。
+  # 必须用 --no-index:已入仓的文件不再受忽略规则影响,查索引会让这条检查在提交后永远为真,
+  # 之后新增的夹具被吞掉就抓不到了。这里查的是规则本身会不会吞掉这些路径。
+  # 路径走 argv 不走 stdin:PowerShell 管道给原生进程的是 CRLF,git 会把 \r 当成路径的一部分。
   $unshippable = @($idx.fixtures | Where-Object {
-    $rel = '.agents/skills/verify-pstack-sync/fixtures/' + $_.name
-    @(& git -C $repo ls-files --cached --others --exclude-standard -- $rel).Count -eq 0
+    $fx = Join-Path $skillDir ("fixtures\" + $_.name)
+    $rels = @(Get-ChildItem $fx -Recurse -File | ForEach-Object { $_.FullName.Substring($repo.Length + 1).Replace('\', '/') })
+    if ($rels.Count -eq 0) { return $false }
+    # --quiet 只接受单个路径;多路径时 git 打印命中的那些,无命中则退出 1 且不输出
+    $hit = @(& git -C $repo check-ignore --no-index -- @rels)
+    $hit.Count -gt 0
   })
   Check 'every fixture would ship (not swallowed by an ignore rule)' ($unshippable.Count -eq 0) (($unshippable | ForEach-Object { $_.name }) -join ', ')
 }

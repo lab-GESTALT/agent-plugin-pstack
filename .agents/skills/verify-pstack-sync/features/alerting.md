@@ -22,7 +22,7 @@ Preconditions:
 
 - `doctor.ps1` exits 0.
 - The `Alert on failure` step still exists in `sync.yml`; doctor checks this.
-- The drive uses a `gh` stub. It never opens a real issue.
+- The drive uses the shared `gh` stub, whose behaviour is set entirely by environment variables. It never opens a real issue.
 
 - **No open issue.** Run `pwsh -NoProfile -File .agents/skills/verify-pstack-sync/helpers/drive.ps1 -Feature alert -Scenario no-open-issue -RunId alert-1`. Expect `alert uses issue create`, `alert body carries gate output`, and `alert body names the failing pattern` to pass. `gh-body.log` holds the exact body.
 - **Existing open issue.** Run with `-Scenario open-issue`. The stub returns `6` from `issue list`; expect `alert uses issue comment 6`.
