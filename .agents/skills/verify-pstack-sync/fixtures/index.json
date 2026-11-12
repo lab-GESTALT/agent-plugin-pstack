@@ -90,6 +90,39 @@
       "kind": "must-pass",
       "class": "B",
       "origin": "实测:同 issue #6 的 /loop 字面量,但换一个未被白名单登记的路径;证明 f4d587f 是实例级修复"
+    },
+    {
+      "name": "tp-ap-only-residual",
+      "kind": "must-block",
+      "class": "E",
+      "origin": "实测:gate1 只扫 plugins/pstack,output/ 从不进扫描面,AP zip 里的散文残留无人把关。此条把残留只放在 output/,CC 侧保持干净",
+      "expectMessage": "output/skills/demo/SKILL.md"
+    },
+    {
+      "name": "fp-ap-clean",
+      "kind": "must-pass",
+      "class": "E",
+      "origin": "tp-ap-only-residual 的绿对照:完整合法的 AP 产物不得因为纳入扫描面而被误杀"
+    },
+    {
+      "name": "tp-frontmatter-reminder",
+      "kind": "must-block",
+      "class": "D",
+      "origin": "map.json frontmatter.moveToMetadata 'reminder';待查字段集合必须由 map 推导,不是另抄一份硬编码清单",
+      "expectMessage": "reminder"
+    },
+    {
+      "name": "tp-frontmatter-is-background",
+      "kind": "must-block",
+      "class": "D",
+      "origin": "map.json frontmatter.moveToMetadata 'is_background';与 reminder 一起覆盖推导集合里不在 drop 数组中的键",
+      "expectMessage": "is_background"
+    },
+    {
+      "name": "fp-body-reminder",
+      "kind": "must-pass",
+      "class": "D",
+      "origin": "实测:frontmatter 字段检查必须只作用于 frontmatter 区域;正文 fenced YAML 里的 reminder: 是示例配置"
     }
   ]
 }

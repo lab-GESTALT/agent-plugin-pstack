@@ -11,6 +11,7 @@ A maintainer runs the pipeline and gets two installable products from one upstre
 - `transform-parity` produces the same skill count in both products.
 - `transform-frontmatter` normalizes each skill `name` to its directory name and moves Cursor-only fields into `metadata`.
 - `transform-unclassified` refuses to guess when upstream adds a manifest field the rule file does not classify.
+- `transform-no-drift` requires the committed Claude Code tree to equal what the current rules recompute, so a hand edit or a stale artifact cannot survive.
 
 ## How to get to it (user POV)
 
@@ -26,7 +27,8 @@ Preconditions:
 - `doctor.ps1` exits 0.
 - `upstream/pstack` exists and its HEAD equals `pin.json.commit`.
 
-- **Full transform.** Run `pwsh -NoProfile -File .agents/skills/verify-pstack-sync/helpers/drive.ps1 -Feature transform -RunId transform-1`. `verdict.json` shows `transform exit=0`, `gates exit=0 on real upstream`, `CC LICENSE present`, `AP LICENSE present`, and `skill parity` with equal counts. The captured `transform.txt` ends with `OK: <scratch>/output / <scratch> (59 skills)`.
+- **Full transform.** Run `pwsh -NoProfile -File .agents/skills/verify-pstack-sync/helpers/drive.ps1 -Feature transform -RunId transform-1`. `verdict.json` shows `transform exit=0`, `gates exit=0 on real upstream`, `CC LICENSE present`, `AP LICENSE present`, `skill parity` with equal counts, and `committed CC artifact equals recomputed output`. The captured `transform.txt` ends with `OK: <scratch>/output / <scratch> (<n> skills)`.
+- **No drift in the committed tree.** The `committed CC artifact equals recomputed output` assertion compares every file under the repo's `plugins/pstack/` against the freshly produced one, normalizing CRLF. A non-empty detail list names the drifted paths. This is the enforcer for the convention that generated content is never hand-edited.
 - **Skill parity value.** Read `skills` from `verdict.json`. It must equal the number of directories under `upstream/pstack/skills` plus any injected asset skill.
 - **License text is upstream's.** Compare the produced `plugins/pstack/LICENSE` against `upstream/pstack/LICENSE`. They must be byte-identical; the pipeline copies, never rewrites, the upstream copyright.
 - **Extension manifest is unmodified.** Compare `output/com.cursor/plugin.json` against `upstream/pstack/.cursor-plugin/plugin.json`. They must be byte-identical.
@@ -34,8 +36,8 @@ Preconditions:
 
 ## Gotchas
 
-- The gate's AP checks are skipped when `output/` is absent, and the skip is reported as a note, not an error. A green gate run on a checkout without `output/` proves nothing about the AP contract. `-Feature transform` always generates `output/` first.
+- The gate's AP checks are skipped when `output/` is absent, and the skip is reported as a note, not an error. A green gate run on a checkout without `output/` proves nothing about the AP contract or the AP residual scan. `-Feature transform` always generates `output/` first.
 - `plugins/pstack/` is wiped and recopied on every transform. Hand edits there are lost; change `transform/map.json` or the scripts instead.
 - `.claude-plugin/marketplace.json` is written only when missing, so a transform run will not repair a hand-broken marketplace.
-- Body-token replacement applies to `*.md` only. A Cursor-specific string inside a `.ts`, `.sh`, or `.json` file survives the transform unchanged; see [gates](./gates.md) for how that is handled.
+- Body-token replacement applies only to the prose extensions declared in `map.json` `gate.proseExtensions`. A Cursor-specific string inside a `.ts`, `.sh`, or `.json` file survives the transform unchanged; see [gates](./gates.md) for how that is handled.
 - A stale local `output/` from an older upstream version produces a skill-parity failure that looks like a regression but is not. Delete `output/` and re-transform before judging.

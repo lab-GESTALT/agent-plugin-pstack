@@ -25,31 +25,48 @@ if (-not (Test-Path $ccRel)) {
 }
 $cc = (Resolve-Path -Path $ccRel).ProviderPath
 
-# ---- gate1: 残留扫描(全部文本文件,脚本类一并覆盖) ----
-$files = @(Get-ChildItem $cc -Recurse -File | Where-Object { $_.Length -lt 5242880 } | ForEach-Object {
-  $raw = Get-Content $_.FullName -Raw -ErrorAction SilentlyContinue
-  if ($null -ne $raw -and -not $raw.Contains([char]0)) {
-    [pscustomobject]@{ Rel = (Get-RelPath $_.FullName $cc); Text = $raw; Lines = ($raw -split "\r?\n") }
+# ---- gate1: 残留扫描(两种产物都扫;散文查全部规则,代码只查硬性标记) ----
+function Read-Tree([string]$base, [string]$label) {
+  return @(Get-ChildItem $base -Recurse -File | Where-Object { $_.Length -lt 5242880 } | ForEach-Object {
+    $raw = Get-Content $_.FullName -Raw -ErrorAction SilentlyContinue
+    if ($null -ne $raw -and -not $raw.Contains([char]0)) {
+      $rel = (Get-RelPath $_.FullName $base)
+      [pscustomobject]@{ Tree = $label; Rel = $rel; Scope = (Get-FileScope $rel); Text = $raw; Lines = ($raw -split "\r?\n") }
+    }
+  })
+}
+
+# 报错要指到修法:规则没覆盖这种写法,还是产物没重算,还是代码按设计不改写
+function Get-ResidualFix($check, $hit) {
+  if ($hit.Scope -ne 'prose') {
+    return 'fix: 代码文件按设计不做散文式替换。确认是功能性字符串后,在 map.json 的 codeResidualAllowlist 按类登记(glob + scope + patterns);若是真泄露,改上游脚本'
   }
-})
+  if (Test-Check $check (Apply-AllTokens $hit.Line)) {
+    return 'fix: map.json 缺少覆盖这种写法的改写规则。在 bodyTokens 增加条目或收紧已有条目的 pattern,变换与门共用同一解释者'
+  }
+  return 'fix: 规则已覆盖这一行,产物却是旧的。重跑 transform.ps1,不要手改生成内容'
+}
+
+$files = @(Read-Tree $cc 'plugins/pstack')
+if (Test-Path $apRel) { $files += @(Read-Tree (Resolve-Path $apRel).ProviderPath 'output') }
+else { $notes += 'gate1 output/ not generated: AP artifact unscanned (run transform.ps1 first)' }
 foreach ($c in $checks) {
   $hits = @()
   foreach ($f in $files) {
+    if ($c.Scope -eq 'prose' -and $f.Scope -ne 'prose') { continue }
     if (-not (Test-Check $c $f.Text)) { continue }
     for ($i = 0; $i -lt $f.Lines.Count; $i++) {
-      if (Test-Check $c $f.Lines[$i]) { $hits += [pscustomobject]@{ Rel = $f.Rel; LineNumber = $i + 1 } }
+      if (Test-Check $c $f.Lines[$i]) {
+        $hits += [pscustomobject]@{ Tree = $f.Tree; Rel = $f.Rel; Scope = $f.Scope; LineNumber = $i + 1; Line = $f.Lines[$i] }
+      }
     }
   }
-  $unexpected = @($hits | Where-Object {
-    $rel = $_.Rel
-    $ok = $false
-    foreach ($a in $allow) { if ($a.path -eq $rel -and $a.patterns -contains $c.Id) { $ok = $true } }
-    -not $ok
-  })
+  $unexpected = @($hits | Where-Object { -not (Test-Allowlisted $allow $_.Rel $_.Scope $c.Id) })
   if ($unexpected.Count -gt 0) {
     $errors += ('gate1 residual: ' + $c.Id + ' x' + $unexpected.Count)
     foreach ($h in ($unexpected | Select-Object -First 3)) {
-      $details += [pscustomobject]@{ i = $errors.Count - 1; text = ('at ' + $h.Rel + ':' + $h.LineNumber) }
+      $details += [pscustomobject]@{ i = $errors.Count - 1; text = ('at ' + $h.Tree + '/' + $h.Rel + ':' + $h.LineNumber) }
+      $details += [pscustomobject]@{ i = $errors.Count - 1; text = (Get-ResidualFix $c $h) }
     }
   } elseif ($hits.Count -gt 0) {
     $notes += ('gate1 allowed residual: ' + $c.Id + ' x' + $hits.Count)
@@ -57,7 +74,15 @@ foreach ($c in $checks) {
 }
 
 # ---- gate2: frontmatter 契约(skills + agents) ----
-$fmDrop = '(?m)^[''\"]?(mode|icon|color|reminder|is_background)[''\"]?\s*:'
+# 待查字段由 map.json 推导,且只在 frontmatter 区域内匹配:正文里的 css/yaml 代码块不算违规
+$fmDrop = Get-FrontmatterDropPattern
+function Get-CursorFrontmatterField([string]$path) {
+  $fm = Get-Frontmatter (Get-Content $path -Raw)
+  if ($null -eq $fm) { return '' }
+  $m = [regex]::Match($fm, $fmDrop)
+  if (-not $m.Success) { return '' }
+  return $m.Groups[1].Value
+}
 $skillDirs = @(Get-ChildItem (Join-Path $cc 'skills') -Directory -ErrorAction SilentlyContinue)
 if ($skillDirs.Count -eq 0) { $errors += 'gate2 no skill directories' }
 foreach ($d in $skillDirs) {
@@ -67,8 +92,8 @@ foreach ($d in $skillDirs) {
   if (-not $hit) { $errors += ('gate2 no name in ' + $d.Name); continue }
   $n = $hit.Line -replace '^name:\s*',''
   if ($n -ne $d.Name) { $errors += ('gate2 name mismatch: ' + $d.Name + ' => ' + $n) }
-  $bad = @(Select-String -Path $smd -Pattern $fmDrop -ErrorAction SilentlyContinue)
-  if ($bad.Count -gt 0) { $errors += ('gate2 cursor-only frontmatter field in ' + $d.Name) }
+  $bad = Get-CursorFrontmatterField $smd
+  if ($bad) { $errors += ('gate2 cursor-only frontmatter field in ' + $d.Name + ': ' + $bad + '; fix: 重跑 transform.ps1,该字段已由 map.json 的 frontmatter.drop/moveToMetadata 声明') }
 }
 $agentFiles = @(Get-ChildItem (Join-Path $cc 'agents') -File -Filter *.md -ErrorAction SilentlyContinue)
 if ($agentFiles.Count -eq 0) { $errors += 'gate2 no agent files' }
@@ -77,8 +102,8 @@ foreach ($a in $agentFiles) {
   if (-not $hit) { $errors += ('gate2 no name in agents/' + $a.Name); continue }
   $n = $hit.Line -replace '^name:\s*',''
   if ($n -ne $a.BaseName) { $errors += ('gate2 agent name mismatch: ' + $a.Name + ' => ' + $n) }
-  $bad = @(Select-String -Path $a.FullName -Pattern $fmDrop -ErrorAction SilentlyContinue)
-  if ($bad.Count -gt 0) { $errors += ('gate2 cursor-only frontmatter field in agents/' + $a.Name) }
+  $bad = Get-CursorFrontmatterField $a.FullName
+  if ($bad) { $errors += ('gate2 cursor-only frontmatter field in agents/' + $a.Name + ': ' + $bad + '; fix: 重跑 transform.ps1,该字段已由 map.json 的 frontmatter.drop/moveToMetadata 声明') }
 }
 
 # ---- gate2(续): 许可文本随两种产物分发 ----

@@ -26,18 +26,18 @@ transform.ps1 直接读取 map.json:manifest.keep 决定顶层保留字段,manif
 
 ## 验证门(三层,唯一闸门)
 
-gate1 残留扫描:扫描 plugins/pstack 下全部文本文件,待检项 = map.json 的 residualPatterns 加上 bodyTokens,门与变换表同源。
+gate1 残留扫描:扫描 plugins/pstack 与 output/ 两棵产物树的全部文本文件。待检项 = map.json 的 residualPatterns(作用于所有文件)加上 bodyTokens(只作用于散文)。文件算散文还是代码由 map.json 的 gate.proseExtensions 决定,变换与门读同一个字段:变换只改写散文,门对代码只查硬性残留标记。
 
 匹配语义只有一个解释者:transform/scripts/rules.psm1。它把每条 bodyToken 归一为 token spec——没有 `pattern` 字段时按**字面串、区分大小写**(StringComparison.Ordinal)匹配与替换,有 `pattern` 字段时按该正则匹配与替换。transform.ps1 与 validate.ps1 调用同一组函数,所以「变换按字面、门按正则」这类两处漂移不可能再出现。正则替换走 MatchEvaluator:替换文本是给文档读的散文,不该被解释成 `$1` 之类的分组引用。
 
 `/loop` 的 `pattern` 是 `(?<![\w./-])/loop(?![\w-])`,要求斜杠起始一个独立词元:命令用法改写,导入路径 `./passes/loop-check.ts` 原样保留。只收紧门、不收紧变换是不够的——那样散文里的路径会被改成 `./passes循环执行直到谓词满足(间隔唤醒)-check.ts`;共用解释者后两侧同时正确。
 
-白名单与报错都按 `find`(令牌身份)匹配,不按正则串,所以调整 pattern 不需要改动已有的 codeResidualAllowlist 登记。
+白名单与报错都按 `find`(令牌身份)匹配,不按正则串,所以调整 pattern 不需要改动已有的 codeResidualAllowlist 登记。登记按**类**而非按实例:`glob` 命中产物树内的相对路径(支持 `**`、`*`、`?`),`scope` 限定文件类别,`patterns` 限定令牌身份。`skills/**` + `scope: code` 的含义是「技能内的脚本按设计保留功能性字符串」,新增脚本自动继承,不必逐条登记;同一 glob 不豁免散文,所以 SKILL.md 里的 Cursor 路径仍然判失败。
 
-gate2 frontmatter 与 Agent Plugins 契约:每个 SKILL.md 的 name 等于目录名,每个 agents/*.md 的 name 等于文件名,frontmatter 不得残留 mode/icon/color/reminder/is_background 顶层字段(含引号写法)。两种产物都必须随上游 MIT 许可文本分发:plugins/pstack/LICENSE 无条件检查,output/LICENSE 在 AP 部分检查。output/ 存在时另查 AP 清单:顶层字段必须落在 apContract.allowedKeys 内、必需字段齐、$schema 等于 canonical id、name 符合规范正则与长度上限、author 字段受限、keywords 为字符串数组、LICENSE 随产物存在、AP 与 CC 的技能数一致。
+gate2 frontmatter 与 Agent Plugins 契约:每个 SKILL.md 的 name 等于目录名,每个 agents/*.md 的 name 等于文件名,frontmatter 不得残留 Cursor 专属顶层字段(含引号写法)。待查字段集合由 map.json 的 frontmatter.drop ∪ frontmatter.moveToMetadata 推导,不另抄一份清单;匹配只作用于 frontmatter 区域,正文 fenced 代码块里的 `color:` / `mode:` / `reminder:` 是示例配置,不算违规。两种产物都必须随上游 MIT 许可文本分发:plugins/pstack/LICENSE 无条件检查,output/LICENSE 在 AP 部分检查。output/ 存在时另查 AP 清单:顶层字段必须落在 apContract.allowedKeys 内、必需字段齐、$schema 等于 canonical id、name 符合规范正则与长度上限、author 字段受限、keywords 为字符串数组、LICENSE 随产物存在、AP 与 CC 的技能数一致。
 
 gate3 CC 市场 dry-run:marketplace.json 与各插件清单必须可解析,name/owner 齐备;每个 plugin.source 必须存在且其 .claude-plugin/plugin.json 可解析;清单声明的 skills/agents 路径必须存在且非空。
 
-脚本类文件不做散文式令牌替换:替换文本是给文档读的措辞,写进 shell / TS / mjs 会破坏脚本行为。这类已知残留逐条登记在 map.json 的 codeResidualAllowlist(路径 + 模式 + 原因);门放行时打印 `gate1 allowed residual`,任何未登记的新残留一律判失败并给出文件与行号。
+脚本类文件不做散文式令牌替换:替换文本是给文档读的措辞,写进 shell / TS / mjs 会破坏脚本行为。这类残留按类登记在 map.json 的 codeResidualAllowlist;门放行时打印 `gate1 allowed residual`,任何未登记的残留一律判失败,给出产物树、文件、行号,并指出修法:map.json 缺覆盖这种写法的改写规则、产物没重算、还是代码按设计不改写。
 
-本地跑门时若 output/ 不存在,gate2 的 AP 部分会打印跳过说明而不是静默通过——CI 里 output/ 总是刚由 transform 生成。
+本地跑门时若 output/ 不存在,gate1 与 gate2 的 AP 部分都会打印跳过说明而不是静默通过——CI 里 output/ 总是刚由 transform 生成。

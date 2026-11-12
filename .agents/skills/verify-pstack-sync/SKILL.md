@@ -26,18 +26,26 @@ Run this first whenever anything looks off, and again after any failed drive:
 pwsh -NoProfile -File .agents/skills/verify-pstack-sync/helpers/doctor.ps1
 ```
 
-It is read-only. It checks the toolchain, that the clone's HEAD equals `pin.json.commit`, that `map.json` and the fixture index parse, that every fixture has a `plugins/` overlay, and that every step the harness drives still exists in `sync.yml`. Exit 0 means the instance is worth driving. A stale clone is the most common cause of a misleading result: refresh it with `git -C upstream fetch --depth 1 origin main && git -C upstream reset --hard FETCH_HEAD` only when you intend to verify against newer upstream.
+It is read-only. It checks the toolchain, that the clone's HEAD equals `pin.json.commit`, that `map.json` and the fixture index parse, that every fixture overlays an artifact tree (`plugins/` or `output/`), that every fixture would actually ship rather than being swallowed by an ignore rule, and that every step the harness drives still exists in `sync.yml`. Exit 0 means the instance is worth driving. A stale clone is the most common cause of a misleading result: refresh it with `git -C upstream fetch --depth 1 origin main && git -C upstream reset --hard FETCH_HEAD` only when you intend to verify against newer upstream.
+
+The shippable-fixture check has a reproducible mutation proof: `-Feature doctor` runs doctor once against the real repo, then again with a temporary `core.excludesFile` containing an unanchored `output/`. The second run must exit 1 naming the AP fixtures. Without that check, an ignore rule can hide a fixture locally while a fresh clone silently loses it and the corpus still reports PASS.
 
 ## Drive
 
 One command per feature. `-RunId` names the evidence directory; omit it and a timestamped id is generated.
 
 ```sh
-# all 14 fixtures, red and green, against the current gates
+# the whole red/green corpus against the current gates
 pwsh -NoProfile -File .agents/skills/verify-pstack-sync/helpers/drive.ps1 -Feature corpus -RunId corpus-1
 
 # one fixture
 pwsh -NoProfile -File .agents/skills/verify-pstack-sync/helpers/drive.ps1 -Feature gates -Fixture fp-ts-subagent-type
+
+# is the frontmatter field set derived from map.json, or a second hardcoded list?
+pwsh -NoProfile -File .agents/skills/verify-pstack-sync/helpers/drive.ps1 -Feature rules -RunId rules-1
+
+# doctor healthy, plus the mutation proof that ignore-swallowed fixtures are caught
+pwsh -NoProfile -File .agents/skills/verify-pstack-sync/helpers/drive.ps1 -Feature doctor -RunId doctor-1
 
 # real upstream -> both artifacts -> all three gates
 pwsh -NoProfile -File .agents/skills/verify-pstack-sync/helpers/drive.ps1 -Feature transform
@@ -81,7 +89,7 @@ Automatic, in a `finally` block, on success and on failure alike. Junctions and 
 ## Helpers
 
 - `helpers/doctor.ps1` — read-only health check, exit 0 healthy.
-- `helpers/drive.ps1` — the driver. `-Feature gates|corpus|transform|detect|publish|alert`, `-Fixture <name>`, `-Scenario <name>`, `-RunId <id>`, `-KeepRoot`.
+- `helpers/drive.ps1` — the driver. `-Feature gates|corpus|rules|doctor|transform|detect|publish|alert`, `-Fixture <name>`, `-Scenario <name>`, `-RunId <id>`, `-KeepRoot`.
 
 Both are invoked exactly as shown above; neither needs a build step.
 

@@ -124,29 +124,20 @@
     "\\.cursor/(projects|plugins|worktrees|skills|rules)",
     "api2\\.cursor\\.sh"
   ],
+  "gate": {
+    "proseExtensions": [
+      ".md"
+    ],
+    "note": "散文/代码分界的唯一来源:transform 只改写这些扩展名,gate1 对其余文本文件只查 residualPatterns"
+  },
   "codeResidualAllowlist": [
     {
-      "path": "skills/poteto-mode/scripts/worktree-audit.sh",
+      "glob": "skills/**",
+      "scope": "code",
       "patterns": [
-        "\\.cursor/(projects|plugins|worktrees|skills|rules)",
-        "~/.cursor/projects",
-        "agent-transcripts"
+        "\\.cursor/(projects|plugins|worktrees|skills|rules)"
       ],
-      "reason": "转录目录在脚本里是字符串常量(变量与注释);散文式替换会破坏脚本行为,显式登记为已知残留"
-    },
-    {
-      "path": "skills/poteto-mode/scripts/check-plan.mjs",
-      "patterns": [
-        "/loop"
-      ],
-      "reason": "程序标记字符串字面量(用于识别唤醒机制),非文档散文;机械替换会改变脚本行为"
-    },
-    {
-      "path": "skills/poteto-mode/scripts/check-plan.test.ts",
-      "patterns": [
-        "/loop"
-      ],
-      "reason": "测试夹具复刻程序清单文本,以 /loop 字面量断言解析结果;机械替换会改变测试语义"
+      "reason": "技能内的脚本按设计不做散文式替换,Cursor 路径在其中是功能性字符串常量;按类整体登记,新增脚本不必逐条登记。api2.cursor.sh 与 pstack-models.mdc 不在豁免内,任何文件命中都判失败"
     }
   ],
   "apContract": {

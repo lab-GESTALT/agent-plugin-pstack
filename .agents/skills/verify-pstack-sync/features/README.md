@@ -16,7 +16,7 @@ This directory is the maintained source for verifying the user-facing behavior o
 - Start every recipe from the baseline state unless its preconditions say otherwise.
 - Treat every command as literal. Keep quoted names and flags unchanged.
 - The harness extracts `run:` blocks from `.github/workflows/sync.yml` at drive time. Do not paste workflow logic into a fixture or a helper; a second copy drifts.
-- Fixtures are overlays on `fixtures/base/`. A fixture directory contains `plugins/...` directly, with no extra wrapper level.
+- Fixtures are overlays on `fixtures/base/`. A fixture directory contains `plugins/...` or `output/...` directly, with no extra wrapper level.
 - Restore nothing by hand: each drive's scratch root is disposable. Do not remove proof artifacts during cleanup.
 
 ## Proof and skip reporting

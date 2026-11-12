@@ -30,8 +30,17 @@ $idx = $null
 try { $idx = Get-Content (Join-Path $skillDir 'fixtures\index.json') -Raw | ConvertFrom-Json } catch {}
 Check 'fixture index parses' ($null -ne $idx) ''
 if ($idx) {
-  $missing = @($idx.fixtures | Where-Object { -not (Test-Path (Join-Path $skillDir ("fixtures\" + $_.name + "\plugins"))) })
-  Check 'every fixture has a plugins/ overlay' ($missing.Count -eq 0) (($missing | ForEach-Object { $_.name }) -join ', ')
+  $missing = @($idx.fixtures | Where-Object {
+    $fx = Join-Path $skillDir ("fixtures\" + $_.name)
+    -not ((Test-Path (Join-Path $fx 'plugins')) -or (Test-Path (Join-Path $fx 'output')))
+  })
+  Check 'every fixture overlays an artifact tree (plugins/ or output/)' ($missing.Count -eq 0) (($missing | ForEach-Object { $_.name }) -join ', ')
+  # 夹具是交付物:被忽略规则吞掉的夹具在本机看着正常,新克隆里根本不存在
+  $unshippable = @($idx.fixtures | Where-Object {
+    $rel = '.agents/skills/verify-pstack-sync/fixtures/' + $_.name
+    @(& git -C $repo ls-files --cached --others --exclude-standard -- $rel).Count -eq 0
+  })
+  Check 'every fixture would ship (not swallowed by an ignore rule)' ($unshippable.Count -eq 0) (($unshippable | ForEach-Object { $_.name }) -join ', ')
 }
 
 $wf = Join-Path $repo '.github\workflows\sync.yml'

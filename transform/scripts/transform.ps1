@@ -54,7 +54,7 @@ function Convert-SkillTree([string]$srcDir, [string]$dstDir, [string]$skillName)
   New-Item -ItemType Directory -Force -Path $dstDir | Out-Null
   Copy-Item (Join-Path $srcDir '*') $dstDir -Recurse -Force
   Set-Frontmatter (Join-Path $dstDir 'SKILL.md') $skillName
-  foreach ($f in (Get-ChildItem $dstDir -Recurse -File -Filter *.md)) { Apply-BodyTokens $f.FullName }
+  foreach ($f in (Get-ChildItem $dstDir -Recurse -File | Where-Object { (Get-FileScope $_.Name) -eq 'prose' })) { Apply-BodyTokens $f.FullName }
 }
 
 $skillDirs = @(Get-ChildItem (Join-Path $Upstream 'skills') -Directory)
@@ -64,7 +64,7 @@ foreach ($d in $skillDirs) { Convert-SkillTree $d.FullName (Join-Path $Out ('ski
 # agents: 同一套 frontmatter 规则,name 归一为文件名
 $agentsOut = Join-Path $Out 'agents'
 Copy-Item (Join-Path $Upstream 'agents') $agentsOut -Recurse -Force
-foreach ($f in (Get-ChildItem $agentsOut -File -Filter *.md)) {
+foreach ($f in (Get-ChildItem $agentsOut -File | Where-Object { (Get-FileScope $_.Name) -eq 'prose' })) {
   Set-Frontmatter $f.FullName $f.BaseName
   Apply-BodyTokens $f.FullName
 }

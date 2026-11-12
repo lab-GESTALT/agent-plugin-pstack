@@ -1,5 +1,5 @@
 param(
-  [Parameter(Mandatory=$true)][ValidateSet('gates','corpus','transform','detect','publish','alert')][string]$Feature,
+  [Parameter(Mandatory=$true)][ValidateSet('gates','corpus','rules','doctor','transform','detect','publish','alert')][string]$Feature,
   [string]$Fixture,
   [string]$Scenario = 'happy',
   [string]$RunId,
@@ -117,6 +117,41 @@ try {
     foreach ($b in $bad) { Log ("    MISS {0} ({1}, class {2}) exit={3} want={4}" -f $b.name, $b.kind, $b.class, $b.actualExit, $b.expectedExit) }
   }
 
+  elseif ($Feature -eq 'doctor') {
+    $healthy = Invoke-Logged 'doctor' { & pwsh -NoProfile -File (Join-Path $skillDir 'helpers\doctor.ps1') }
+    Assert 'doctor healthy on the real repo' ($healthy.code -eq 0) ''
+    # 判别性证明:未锚定的 output/ 忽略规则会吞掉 AP 夹具。本机看着正常,新克隆里夹具根本不存在,
+    # 语料会少两条却仍然报 PASS。这里用一份临时 excludesFile 复现那个规则,doctor 必须抓到。
+    $probe = Join-Path $scratch 'excludes-probe'
+    Set-Content -Path $probe -Value "output/`n" -Encoding utf8 -NoNewline
+    $env:GIT_CONFIG_COUNT = '1'
+    $env:GIT_CONFIG_KEY_0 = 'core.excludesFile'
+    $env:GIT_CONFIG_VALUE_0 = (BashPath $probe)
+    $mutated = Invoke-Logged 'doctor-mutation' { & pwsh -NoProfile -File (Join-Path $skillDir 'helpers\doctor.ps1') }
+    Remove-Item Env:GIT_CONFIG_COUNT, Env:GIT_CONFIG_KEY_0, Env:GIT_CONFIG_VALUE_0
+    Assert 'ignore-swallowed fixtures are caught' ($mutated.code -eq 1 -and $mutated.text -match 'would ship') ("exit=" + $mutated.code)
+  }
+
+  elseif ($Feature -eq 'rules') {
+    # 判别性证明:待查 frontmatter 字段是推导的还是另抄了一份硬编码清单。
+    # 往 map 的 frontmatter.drop 注入一个合成键,门必须立刻认识它;硬编码清单会在这里放行。
+    $synthetic = 'synthetic_cursor_field'
+    $root = Join-Path $scratch 'repo'
+    Copy-Tree (Join-Path $skillDir 'fixtures\base') $root
+    Set-Content -Path (Join-Path $root 'plugins\pstack\skills\demo\SKILL.md') -Encoding utf8 -Value ("---`nname: demo`n" + $synthetic + ": leaked`n---`n`nplain body`n")
+    $before = Invoke-Logged 'rules-undeclared' { & pwsh -NoProfile -File (Join-Path $repo 'transform\scripts\validate.ps1') -Root $root }
+    Assert 'undeclared key is not a violation' ($before.code -eq 0) ("exit=" + $before.code)
+    $tfDir = Join-Path $scratch 'transform'
+    Copy-Tree (Join-Path $repo 'transform') $tfDir
+    $mapPath = Join-Path $tfDir 'map.json'
+    $m = Get-Content $mapPath -Raw | ConvertFrom-Json
+    $m.frontmatter.drop = @($m.frontmatter.drop) + $synthetic
+    $m | ConvertTo-Json -Depth 12 | Set-Content $mapPath -Encoding utf8
+    $after = Invoke-Logged 'rules-declared' { & pwsh -NoProfile -File (Join-Path $tfDir 'scripts\validate.ps1') -Root $root }
+    Assert 'declaring a key in map.json immediately enforces it' ($after.code -eq 1 -and $after.text -match $synthetic) ("exit=" + $after.code)
+    $verdict['syntheticKey'] = $synthetic
+  }
+
   elseif ($Feature -eq 'transform') {
     Copy-Tree (Join-Path $repo '.claude-plugin') (Join-Path $scratch '.claude-plugin')
     $t = Invoke-Logged 'transform' { & pwsh -NoProfile -File (Join-Path $repo 'transform\scripts\transform.ps1') -Upstream (Join-Path $repo 'upstream\pstack') -Out (Join-Path $scratch 'output') -OutCc $scratch }
@@ -128,6 +163,20 @@ try {
     $ccSkills = @(Get-ChildItem (Join-Path $scratch 'plugins\pstack\skills') -Directory).Count
     $apSkills = @(Get-ChildItem (Join-Path $scratch 'output\skills') -Directory).Count
     Assert 'skill parity' ($ccSkills -eq $apSkills) "CC=$ccSkills AP=$apSkills"
+    # 入仓产物必须等于当前规则重算的结果:AGENTS.md 说生成内容不手改,这条断言是那个约定的强制器
+    $norm = {
+      param($base)
+      $h = @{}
+      foreach ($f in (Get-ChildItem $base -Recurse -File)) {
+        $rel = $f.FullName.Substring($base.Length).TrimStart('\','/').Replace('\','/')
+        $h[$rel] = ((Get-Content $f.FullName -Raw) -replace "`r`n", "`n")
+      }
+      return $h
+    }
+    $committed = & $norm (Join-Path $repo 'plugins\pstack')
+    $produced  = & $norm (Join-Path $scratch 'plugins\pstack')
+    $drift = @($committed.Keys | Where-Object { -not $produced.ContainsKey($_) -or $produced[$_] -ne $committed[$_] }) + @($produced.Keys | Where-Object { -not $committed.ContainsKey($_) })
+    Assert 'committed CC artifact equals recomputed output' ($drift.Count -eq 0) (($drift | Select-Object -First 5) -join ', ')
     $verdict['skills'] = $ccSkills
   }
 
