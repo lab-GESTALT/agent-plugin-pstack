@@ -1,0 +1,5 @@
+# 通用版产物随 release zip 发布,不入仓;上游克隆与门报告是同步过程的中间件
+output/
+upstream/
+*.zip
+gate-report.txt
