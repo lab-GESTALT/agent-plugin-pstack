@@ -1,8 +1,8 @@
 {
   "upstream": "https://github.com/cursor/plugins",
   "path": "pstack",
-  "commit": "e58dd043600587dbaf58ba315e7f2b38373eeb43",
-  "date": "2026-11-19",
-  "version": "0.15.44",
-  "pstackTree": "1186430edb1d16e41d644aaf155a92a09efe06ff"
+  "commit": "7a583913eb1b8d1a0ee76753d1a2cf072e7b54f9",
+  "date": "2026-11-21",
+  "version": "0.15.46",
+  "pstackTree": "b47cf6d63625b48fd77893233044849935cdae3d"
 }
