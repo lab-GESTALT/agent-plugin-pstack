@@ -1,7 +1,7 @@
 {
   "name": "pstack",
   "displayName": "pstack (generic)",
-  "version": "0.15.46",
+  "version": "0.15.48",
   "skills": "./skills/",
   "agents": "./agents/"
 }
