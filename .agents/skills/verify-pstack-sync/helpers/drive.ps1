@@ -82,6 +82,9 @@ case "$1 $2" in
     exit 0 ;;
   "issue list")
     printf '%s' "$GH_EXISTING_ISSUE"; exit 0 ;;
+  "api --method")
+    if [ "$GH_PIN_API_FAIL" = "1" ]; then echo "stub: contents api refused" >&2; exit 1; fi
+    printf '%s\n' "$GH_RELEASE_PIN"; exit 0 ;;
   "api "*)
     if [ "$GH_API_FAIL" = "1" ]; then echo "stub: jobs api refused" >&2; exit 1; fi
     printf '%s\n' "$GH_FAILED_STEPS"; exit 0 ;;
@@ -243,8 +246,8 @@ try {
     Copy-Item (Join-Path $repo 'pin.json') (Join-Path $scratch 'pin.json')
     Link-Upstream $scratch
     $pinPath = Join-Path $scratch 'pin.json'
-    if ($Scenario -in @('unchanged','release-missing','gh-fails')) {
-      # 这三条的前提是「pin 已同步」。现算,不继承仓库当时的状态。
+    if ($Scenario -in @('unchanged','release-missing','same-version-old-release','pin-api-fails','gh-fails')) {
+      # 这些场景的前提是「pin 已同步」。现算,不继承仓库当时的状态。
       $tf = { & pwsh -NoProfile -File (Join-Path $repo 'transform\scripts\transform.ps1') -Upstream (Join-Path $scratch 'upstream\pstack') -Out (Join-Path $scratch 'output') -OutCc $scratch }
       $bt = Invoke-Logged 'baseline-transform' $tf
       Assert 'baseline transform exit=0' ($bt.code -eq 0) ''
@@ -255,10 +258,13 @@ try {
     if ($Scenario -eq 'changed') { $pin.pstackTree = '' }
     elseif ($Scenario -eq 'missing-field') { $pin.PSObject.Properties.Remove('pstackTree') }
     elseif ($Scenario -eq 'release-missing') { $releases = '' }
-    elseif ($Scenario -notin @('unchanged','gh-fails')) { throw "unknown detect scenario: $Scenario" }
+    elseif ($Scenario -notin @('unchanged','same-version-old-release','pin-api-fails','gh-fails')) { throw "unknown detect scenario: $Scenario" }
     $pin | ConvertTo-Json -Depth 6 | Set-Content $pinPath -Encoding utf8
     New-GhStub (Join-Path $scratch 'bin') | Out-Null
     $env:GH_RELEASES = $releases
+    $env:GITHUB_REPOSITORY = 'local/pstack-fixture'
+    $env:GH_RELEASE_PIN = if ($Scenario -eq 'same-version-old-release') { 'older-pin-blob' } else { & git hash-object -- $pinPath }
+    $env:GH_PIN_API_FAIL = if ($Scenario -eq 'pin-api-fails') { '1' } else { '0' }
     $env:GH_LIST_FAIL = if ($Scenario -eq 'gh-fails') { '1' } else { '0' }
     $step = Join-Path $scratch 'detect.sh'
     Set-Content -Path $step -Value (Get-Step 'Detect change') -Encoding utf8
@@ -273,7 +279,7 @@ try {
     Assert ("detect scenario={0} changed={1} want={2}" -f $Scenario, $changed, $want) ($changed -eq $want) ''
     $verdict['changed'] = $changed
     Assert 'detect exit=0' ($r.code -eq 0) ''
-    if ($Scenario -in @('unchanged','release-missing','gh-fails')) {
+    if ($Scenario -in @('unchanged','release-missing','same-version-old-release','pin-api-fails','gh-fails')) {
       $verdict['standInSetup'] = @('synced pin derived by running the real Record upstream step against the local clone, not read from the repo')
     }
 

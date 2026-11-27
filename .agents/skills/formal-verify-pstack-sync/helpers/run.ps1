@@ -50,7 +50,9 @@ if ($record -notmatch 'VERSION=') { throw 'Record upstream no longer computes VE
 
 # 判据必须落在「决定」上,不能落在日志字符串上:CHANGED=yes 在步骤开头无条件出现,
 # 只匹配 self-heal 字样会把「保留 echo、删掉判定」的死检查判为健康。
-$selfHeal       = ($detect -match 'grep -c "\^pstack-\$\{PIN_VERSION\}') -and
+$selfHeal       = ($detect -match 'PIN_BLOB=\$\(git hash-object pin\.json\)') -and
+                  ($detect -match 'RELEASE_PIN=\$\(gh api --method GET "[^\r\n]+/contents/pin\.json" -f ref="refs/tags/\$TAG" --jq \.sha\)') -and
+                  ($detect -match '\[ "\$RELEASE_PIN" = "\$PIN_BLOB" \]; then\s*\r?\n\s*MATCH=1') -and
                   ($detect -match 'if \[ "\$MATCH" = 0 \]; then\s*\r?\n\s*CHANGED=yes')
 $swallowCommit  = $commit -match 'git commit[^\r\n]*\|\|'
 $swallowRelease = $release -match 'gh release create[^\r\n]*\|\|'

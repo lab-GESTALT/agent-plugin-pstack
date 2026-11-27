@@ -48,18 +48,26 @@ jobs:
           echo "new=$NEW" >> "$GITHUB_OUTPUT"
           CHANGED=yes
           if [ -n "$OLD" ] && [ "$OLD" = "$NEW_TREE" ]; then CHANGED=no; fi
-          # 自愈:pin 说已同步,但该版本没有任何 release,下游就拿不到通用版产物。
-          # 只看子树哈希会让这种状态永远短路,所以发布缺失同样判为有变更。
+          # 同版本旧序号的 release 不能证明当前 pin 已发布:同版本新树可能在 push 后发布失败。
           if [ "$CHANGED" = no ] && [ -n "$PIN_VERSION" ]; then
+            PIN_BLOB=$(git hash-object pin.json)
             if ! RELEASED=$(gh release list --limit 200 --json tagName --jq '.[].tagName'); then
-              # 查不到发布状态时往「重跑」方向倒:宁可多做一次,不可静默跳过发布
               echo "::warning::cannot list releases; treating as changed so publication is retried"
               RELEASED=""
             fi
-            MATCH=$(printf '%s\n' "$RELEASED" | grep -c "^pstack-${PIN_VERSION}-r[0-9]" || true)
+            PREFIX="pstack-${PIN_VERSION}-r"
+            MATCH=0
+            while IFS= read -r TAG; do
+              [[ "$TAG" == "$PREFIX"* && "${TAG#"$PREFIX"}" =~ ^[0-9]+$ ]] || continue
+              if RELEASE_PIN=$(gh api --method GET "repos/${GITHUB_REPOSITORY}/contents/pin.json" -f ref="refs/tags/$TAG" --jq .sha) &&
+                [ "$RELEASE_PIN" = "$PIN_BLOB" ]; then
+                MATCH=1
+                break
+              fi
+            done <<< "$RELEASED"
             if [ "$MATCH" = 0 ]; then
               CHANGED=yes
-              echo "self-heal: no release published for pinned version ${PIN_VERSION}"
+              echo "self-heal: no release published for current pin ${PIN_VERSION}"
             fi
           fi
           echo "changed=$CHANGED" >> "$GITHUB_OUTPUT"

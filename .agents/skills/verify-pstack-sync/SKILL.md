@@ -57,6 +57,8 @@ pwsh -NoProfile -File .agents/skills/verify-pstack-sync/helpers/drive.ps1 -Featu
 pwsh -NoProfile -File .agents/skills/verify-pstack-sync/helpers/drive.ps1 -Feature detect -Scenario changed
 pwsh -NoProfile -File .agents/skills/verify-pstack-sync/helpers/drive.ps1 -Feature detect -Scenario missing-field
 pwsh -NoProfile -File .agents/skills/verify-pstack-sync/helpers/drive.ps1 -Feature detect -Scenario release-missing
+pwsh -NoProfile -File .agents/skills/verify-pstack-sync/helpers/drive.ps1 -Feature detect -Scenario same-version-old-release
+pwsh -NoProfile -File .agents/skills/verify-pstack-sync/helpers/drive.ps1 -Feature detect -Scenario pin-api-fails
 pwsh -NoProfile -File .agents/skills/verify-pstack-sync/helpers/drive.ps1 -Feature detect -Scenario gh-fails
 
 # the real Record/Commit/Tag-and-push/Publish blocks against a local bare remote

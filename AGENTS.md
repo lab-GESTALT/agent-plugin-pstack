@@ -28,7 +28,7 @@
 | 入仓生成内容必须等于当前规则重算的结果 | harness drift 断言 | `-Feature transform`(committed CC artifact equals recomputed output) |
 | 验证夹具必须能入仓,不被忽略规则吞掉 | `doctor.ps1` 的 `check-ignore --no-index` | `-Feature doctor`(临时 excludesFile 注入未锚定 `output/`) |
 | 绿运行必须意味着已发布且远端自洽 | `sync.yml` 不再吞失败 + publish 性质断言 + 模型 `GreenConsistent` | `-Feature publish -Scenario release-fails / commit-fails`;`swallow-release` / `swallow-commit` 变体 |
-| 发布缺失必须自愈,不能永久短路 | `Detect change` 的 release 检查 + 模型 `SelfHeal` 开关 | `-Feature detect -Scenario release-missing / gh-fails`;`no-self-heal` 变体 |
+| 当前 pin 的发布缺失必须自愈,不可被同版本旧序号掩盖 | `Detect change` 检查 release tag 下的 pin blob + 模型 `SelfHeal` 开关 | `-Feature detect -Scenario release-missing / same-version-old-release / pin-api-fails / gh-fails`;`no-self-heal` 变体 |
 | 上游停下后,当前版本终须发布(跨运行活性) | 模型 `EventuallyPublished` | `stale-version` 变体(版本号取自旧 pin 时必红) |
 | 模型开关必须从 workflow 正文派生,锚点缺失即拒绝出结论 | `formal-verify-pstack-sync/helpers/run.ps1` 的派生与 throw | 对真实 `sync.yml` 做两次 scratch 改动:删掉自愈判定、只留 echo 删掉赋值,均被判红后还原 |
 | push 被拒必须 rebase 重试,冲突必须红 | `Tag and push` 的 `rebase_onto_remote` | `-Feature publish -Scenario push-rejected`(断言重试分支真的跑了) |
